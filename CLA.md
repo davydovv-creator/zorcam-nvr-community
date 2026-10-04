@@ -141,7 +141,7 @@ This form is for a company that owns rights to Contributions created by its empl
    of the Civil Code of the Russian Federation or similar rules).
 3. The person signing for the Company represents that they are authorized to do so: they are the CEO, or act
    under a power of attorney attached to this form.
-4. Form: signed on paper or with a qualified electronic signature, and sent to zorcam@yandex.ru. Each listed
+4. Form: signed on paper or with a qualified electronic signature, and sent to zorcamnvr@yandex.ru. Each listed
    person also signs the Individual Agreement in CLA Assistant so that their account can be identified.
 
 Company name, registration number (OGRN/other): ________  
@@ -289,7 +289,7 @@ Zorcam в том виде, в каком Вклад передан. Она ох�
 3. Лицо, подписывающее Соглашение за Компанию, подтверждает свои полномочия: это единоличный исполнительный
    орган, или он действует по доверенности, приложенной к Соглашению.
 4. Форма: подпись на бумаге или усиленная квалифицированная электронная подпись, документ направляется на
-   zorcam@yandex.ru. Каждое лицо из Приложения А также подписывает Соглашение для физических лиц в CLA Assistant,
+   zorcamnvr@yandex.ru. Каждое лицо из Приложения А также подписывает Соглашение для физических лиц в CLA Assistant,
    чтобы его аккаунт можно было идентифицировать.
 
 Наименование, ОГРН (иной регистрационный номер): ________  
