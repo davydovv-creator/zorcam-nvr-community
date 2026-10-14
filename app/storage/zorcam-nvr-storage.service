@@ -1,0 +1,20 @@
+[Unit]
+Description=Zorcam recordings disk (USB): format, mount, keep it connected
+# at boot it mounts the disk before the detector and the gallery start writing and reading the recordings
+Before=zorcam-nvr-capture.service zorcam-nvr-gallery.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# root: it formats and mounts disks. No ProtectSystem / PrivateTmp here: a private mount namespace would keep its
+# mounts away from the other services. It acts only on a USB disk without the system (checked again by lsblk).
+ExecStart=/usr/bin/python3 /opt/zorcam-nvr/storage/zorcam_storage.py run
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle
+# limits: formatting and moving the recordings must not take the memory and CPU of the cameras (Pi 3, 1 GB)
+MemoryMax=128M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

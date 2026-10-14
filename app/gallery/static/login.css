@@ -1,0 +1,21 @@
+body { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
+.login { width:100%; max-width:340px; }
+h1 { font:600 13px var(--mono); letter-spacing:0.12em; text-transform:uppercase; margin:0 0 24px; text-align:center; }
+.group { background:var(--panel); border:1px solid var(--line); border-radius:2px; overflow:hidden; margin-bottom:16px; }
+.line { position:relative; display:flex; align-items:center; gap:12px; min-height:44px; padding:0 16px; }
+.line + .line::before { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line); }
+label { flex:none; width:96px; }
+input[type=text], input[type=password] {
+  flex:1; min-width:0; padding:11px 0; border:none; outline:none; background:none; color:var(--text); font:inherit;
+}
+button {
+  width:100%; min-height:48px; border:1px solid var(--text); border-radius:2px; background:var(--text); color:#fff;
+  font:inherit; font-weight:600; cursor:pointer;
+}
+.error { color:var(--bad); font-size:13px; text-align:center; margin-bottom:16px; }
+/* from 1024 px (a laptop): the same centered column, a little wider; focus is visible */
+@media (min-width: 1024px) {
+  .login { max-width:400px; }
+  .line:focus-within { outline:2px solid var(--text); outline-offset:-2px; }
+}
+@media (min-width: 1024px) and (hover: hover) { button:hover { background:#000; } }

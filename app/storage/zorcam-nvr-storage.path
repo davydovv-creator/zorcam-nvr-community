@@ -1,0 +1,9 @@
+[Unit]
+Description=Zorcam recordings disk: a request from the gallery (Settings -> General -> Recordings disk)
+
+[Path]
+PathExists=/var/lib/zorcam-nvr/storage/request.json
+Unit=zorcam-nvr-storage.service
+
+[Install]
+WantedBy=multi-user.target

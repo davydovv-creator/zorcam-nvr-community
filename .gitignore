@@ -1,0 +1,6 @@
+secrets.env
+__pycache__/
+*.pyc
+*.tmp
+.pytest_cache/
+.ruff_cache/

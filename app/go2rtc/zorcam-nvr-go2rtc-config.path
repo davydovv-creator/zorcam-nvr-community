@@ -1,0 +1,12 @@
+[Unit]
+Description=Zorcam: restart go2rtc when zorcam.conf, the cameras or their passwords change
+
+[Path]
+# the detector and the gallery restart by themselves; go2rtc gets [live] public_ip and the camera streams on restart
+PathChanged=/var/lib/zorcam-nvr/config/zorcam.conf
+PathChanged=/var/lib/zorcam-nvr/config/cameras.json
+PathChanged=/var/lib/zorcam-nvr/config/secrets.env
+Unit=zorcam-nvr-go2rtc-config.service
+
+[Install]
+WantedBy=multi-user.target

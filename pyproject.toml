@@ -1,0 +1,13 @@
+# Development tool settings (not used on the Pi).
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/gallery/app.py" = ["E501"]  # inline HTML templates and SVG icons
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

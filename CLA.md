@@ -1,6 +1,6 @@
 # Zorcam Contributor License Agreement
 
-Version 1.0 — DRAFT
+Version 1.0 — 14 October 2026
 
 The English text is followed by the Russian one. If they differ, the Russian text prevails.
 

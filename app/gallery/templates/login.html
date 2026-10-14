@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="[[lang]]">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+$app_head<title>$app_name $version — [[login.title]]</title>
+<link rel="stylesheet" href="$css_app">
+<link rel="stylesheet" href="$css_login">
+</head>
+<body>
+<div class="login">
+  <h1>Zorcam</h1>
+  $error
+  <form method="POST" action="/login">
+    <div class="group">
+      <div class="line"><label for="u">[[login.user]]</label>
+        <input type="text" id="u" name="username" autocomplete="username" autocapitalize="off" required></div>
+      <div class="line"><label for="p">[[login.password]]</label>
+        <input type="password" id="p" name="password" autocomplete="current-password" required></div>
+    </div>
+    <button type="submit">[[login.submit]]</button>
+  </form>
+</div>
+</body>
+</html>

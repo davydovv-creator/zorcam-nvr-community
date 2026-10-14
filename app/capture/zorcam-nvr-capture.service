@@ -1,0 +1,37 @@
+[Unit]
+Description=Zorcam capture (persistent RTSP, motion detection, motion clips)
+After=network-online.target zorcam-nvr-go2rtc.service
+Wants=network-online.target zorcam-nvr-go2rtc.service
+
+[Service]
+# no EnvironmentFile: daemon.py reads the camera passwords from secrets.env itself, when it needs them,
+# so they are not in the environment of every ffmpeg it starts
+Type=simple
+ExecStart=/usr/bin/python3 /opt/zorcam-nvr/capture/daemon.py
+Restart=always
+RestartSec=5
+# daemon.py sends WATCHDOG=1 every ~10 s; if it hangs, systemd restarts it
+WatchdogSec=60
+NotifyAccess=main
+# its own system user without sudo or a login; the program in /opt/zorcam-nvr is read-only for it, it writes only
+# /var/lib/zorcam-nvr (settings, recordings) and /dev/shm/zorcam_*
+User=zorcam-nvr
+Group=zorcam-nvr
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+WorkingDirectory=/opt/zorcam-nvr/capture
+# limits: a runaway process is restarted instead of freezing the whole Pi (1 GB RAM, SSH must stay reachable)
+# above MemoryHigh the kernel stalls every process of the service (detectors lose frames): leave room for
+# the detectors (~15 MB of ffmpeg + ~18 MB of python each) and the stream recorders (~15 MB each); five cameras
+# sat at 400M all day (millions of "high" events, all of them reconnecting) before the memory fix of 0.2.0
+# percent of physical memory: on a Pi 3 (~920 MB) it is the former ~480M / ~560M, on a Pi 4/5 the limits grow by themselves
+MemoryHigh=52%
+MemoryMax=61%
+MemorySwapMax=0
+CPUQuota=200%
+CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

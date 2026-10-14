@@ -1,0 +1,93 @@
+/* Shared by all pages. The look is a strict "control panel", like the cloud app (see "Дизайн галереи" in CLAUDE.md): light
+   theme only, colors only as variables, corners 0-2 px, no shadows or gradients, monospace labels; ::placeholder is
+   dim italic: an example in an empty field must not look like an entered value. Each page adds its own file
+   (login.css, watch.css, settings.css, main.css) after this one. */
+:root {
+  color-scheme:light;
+  --bg:#f3f3f1; --panel:#fff; --line:#d9d9d6; --text:#1c1c1c; --muted:#6e6e6a; --ok:#2f9e44; --bad:#d92d20; --warn:#9a6700;
+  --btn:#bdbdb8; --fill:#ebebe8; --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing:border-box; -webkit-text-size-adjust:100%; -webkit-tap-highlight-color:transparent; }
+html, body { background:var(--bg); }
+body {
+  color:var(--text); font:16px/1.35 -apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased; margin:0; max-width:100%; overflow-x:hidden;
+  padding-bottom:max(16px, env(safe-area-inset-bottom));
+}
+a { color:var(--text); text-decoration-thickness:1px; text-underline-offset:2px; }
+:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+::placeholder { color:var(--btn); opacity:1; font-style:italic; }
+/* the app name and the clock in the phone header, the badge of a non-prod stand (TEST, STAGE) */
+.appname { display:inline-flex; align-items:center; position:relative; margin-right:auto; padding-left:4px; font:600 12px var(--mono); letter-spacing:0.12em; text-transform:uppercase; white-space:nowrap; }
+.modebtn {
+  appearance:none; -webkit-appearance:none; border:none; background:transparent; color:var(--text); cursor:pointer;
+  width:44px; height:44px; margin:0 -8px; padding:0; line-height:0; display:inline-flex; align-items:center; justify-content:center;
+}
+.modetip {
+  position:absolute; z-index:25; left:0; top:100%; width:max-content; max-width:220px; padding:8px 10px;
+  background:var(--panel); border:1px solid var(--line); border-radius:2px;
+  font:13px/1.35 var(--mono); letter-spacing:0; text-transform:none; white-space:normal; font-weight:400;
+}
+.envbadge {
+  display:inline-block; margin-left:8px; padding:1px 6px; border:1px solid #d4b26a; color:var(--warn);
+  font:400 12px var(--mono); letter-spacing:0.04em; text-transform:uppercase; vertical-align:1px;
+}
+.clock { margin:0 6px; font:12px var(--mono); letter-spacing:0.04em; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.large { font-size:1.3rem; font-weight:600; line-height:1.2; margin:0; padding:10px 0 12px; }
+/* the motion frame over the picture of a clip (a card in Videos, the player) */
+.mbox { position:absolute; z-index:1; min-width:6px; min-height:6px; border:2px solid var(--bad); border-radius:2px; pointer-events:none; }
+body.tabbed { padding-bottom:calc(60px + env(safe-area-inset-bottom)); }
+.tabbar {
+  position:fixed; left:0; right:0; bottom:0; z-index:20; display:flex; justify-content:space-around;
+  padding:0 0 env(safe-area-inset-bottom); background:var(--panel); border-top:1px solid var(--line);
+}
+.tab {
+  appearance:none; -webkit-appearance:none; border:none; border-top:2px solid transparent; margin-top:-1px; background:none;
+  padding:7px 0 6px; font-family:var(--mono); cursor:pointer;
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:3px;
+  color:var(--muted); font-size:10px; line-height:1.2; font-weight:500; letter-spacing:0.06em; text-transform:uppercase;
+  text-decoration:none;
+}
+.tab svg { width:24px; height:24px; }
+.tab.active { color:var(--text); border-top-color:var(--text); }
+.tabbar .brand, .tabbar .who { display:none; }
+/* from 1024 px (a laptop): the tab bar becomes the sidebar, the content gets its place on the right */
+@media (min-width: 1024px) {
+  .appname, .clock { display:none; }
+  body.tabbed { padding:0 0 0 232px; }
+  .tabbar {
+    top:0; right:auto; width:232px; flex-direction:column; justify-content:flex-start; gap:2px; padding:22px 0 14px;
+    background:var(--panel); border-top:none; border-right:1px solid var(--line); overflow-y:auto;
+  }
+  .tabbar .brand { display:flex; align-items:center; position:relative; padding:0 20px 14px; font:600 13px var(--mono); letter-spacing:0.12em; text-transform:uppercase; }
+  .tabbar .brand .envbadge { vertical-align:1px; }
+  .tab {
+    flex:none; max-width:none; flex-direction:row; align-items:center; justify-content:flex-start; gap:12px;
+    min-height:40px; margin:0; padding:0 18px; border-top:none; border-left:2px solid transparent;
+    font-size:12px; text-align:left;
+  }
+  .tab svg { flex:none; width:20px; height:20px; }
+  .tab.active { color:var(--text); border-left-color:var(--text); background:var(--bg); }
+  .tabbar .who {
+    display:flex; align-items:center; gap:10px; margin-top:auto; padding:12px 18px 0; border-top:1px solid var(--line);
+    font-size:14px; line-height:1.2; min-width:0;
+  }
+  .who .ava {
+    flex:none; width:32px; height:32px; border-radius:2px; background:var(--bg); border:1px solid var(--line);
+    color:var(--text); display:flex; align-items:center; justify-content:center; font:600 14px var(--mono); text-transform:uppercase;
+  }
+  .who .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .who .nm small { display:block; font:12px var(--mono); color:var(--muted); }
+}
+.ptr {
+  position:fixed; left:50%; top:calc(env(safe-area-inset-top) + 10px); z-index:20;
+  width:38px; height:38px; margin-left:-19px; border-radius:2px;
+  background:var(--panel); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; color:var(--muted);
+  opacity:0; transform:translateY(-60px); pointer-events:none;
+}
+.ptr svg { transition:transform 0.15s; }
+.ptr.ready { color:var(--text); }
+.ptr.ready svg { transform:rotate(180deg); }
+.ptr.loading svg { animation:spin 0.8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }

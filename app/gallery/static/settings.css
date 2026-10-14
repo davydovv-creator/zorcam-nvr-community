@@ -1,0 +1,181 @@
+.viewbar { position:sticky; top:0; z-index:5; background:var(--bg); padding:env(safe-area-inset-top) 16px 0; border-bottom:1px solid var(--line); }
+.viewbar .bar { display:flex; align-items:center; justify-content:space-between; gap:12px; max-width:528px; margin:0 auto; min-height:44px; }
+.viewbar .bar:empty { min-height:16px; }
+.back { display:flex; align-items:center; gap:4px; color:var(--text); text-decoration:none; padding:10px 8px 10px 0; }
+.viewbar .ro { margin-left:auto; font:12px var(--mono); color:var(--muted); }
+.wrap { padding:0 16px 32px; max-width:560px; margin:0 auto; }  /* as on a phone: no wider than a large iPhone */
+.intro { font-size:15px; color:var(--muted); margin:0 0 4px; line-height:1.4; }
+.intro a, .tip a, .row .v a { color:var(--text); text-decoration:underline; }
+.steps { font-size:13px; color:var(--muted); margin:0 0 8px; }
+
+/* the group is the <section>: a white panel with a 1 px line, its label (h2) hangs above it, rows are separated by a line */
+section { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:2px; margin:36px 0 0; }
+section > h2 {
+  position:absolute; left:0; right:0; bottom:100%; margin:0; padding:0 16px 7px;
+  font-size:13px; font-weight:400; line-height:1.3; color:var(--muted);
+}
+.row { position:relative; display:flex; align-items:center; gap:12px; min-height:44px; padding:11px 16px; line-height:1.25; }
+.row::before, .rec form::before, section .actions > form::before, section .actions > a::before {
+  content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line);
+}
+.row:first-child::before, section > .row:first-of-type::before, section > h2 + form > .row:first-of-type::before,
+section > h2 + .rec > form:first-child::before, section > h2 + .actions > :first-child::before { display:none; }
+.row.all { background:var(--bg); font-weight:600; }
+.row.all + .reccols { border-top:1px solid var(--line); }
+.row .k { flex:1; min-width:0; white-space:pre-line; color:inherit; text-decoration:none; }
+.row .sub { display:block; font-size:13px; color:var(--muted); margin-top:1px; overflow-wrap:anywhere; }
+.row .v { text-align:right; max-width:55%; overflow-wrap:anywhere; color:var(--muted); font:13px var(--mono); }
+.v.ok, .row .sub.ok { color:var(--ok); }
+.row .sub.warn { color:var(--warn); }
+.v.bad, .row .sub.bad, .row .k.bad { color:var(--bad); }
+.v.muted, .row .k.muted { color:var(--btn); }
+/* switched off is not an error: amber, the name is muted */
+.row .sub .off, .row .sub .working, .row .sub .broken { color:var(--warn); font:12px var(--mono); letter-spacing:0.04em; text-transform:uppercase; }
+.row .sub .working { color:var(--ok); }
+.row .sub .broken { color:var(--bad); }
+.row .k.dim { color:var(--muted); }
+.row .v a.chev { color:var(--muted); font:22px/1 -apple-system,system-ui,sans-serif; margin-left:-2px; text-decoration:none; padding:8px 0 8px 4px; }
+.row.field { flex-direction:column; align-items:stretch; gap:8px; }
+.row.field .k { font-size:15px; }
+.row.field input:not([type=checkbox]), .row.field select {
+  width:100%; min-height:44px; padding:10px 12px; border:1px solid var(--btn); border-radius:2px; background:var(--panel);
+  color:var(--text); font:inherit;
+}
+.row.field input:not([type=checkbox]):focus, .row.field select:focus { outline:2px solid var(--text); outline-offset:-1px; }
+.row.field.err input, .row.field.err select { border-color:var(--bad); }
+.row.field.off { opacity:0.45; }
+.row.field .msg, .msg { color:var(--bad); font-size:13px; }
+.switch-row { display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; }
+/* a switch 36×20, the knob 14×14 with a 3 px gap; the tap area is 44 px high (::after reaches beyond the box) */
+input.switch {
+  appearance:none; -webkit-appearance:none; flex:none; width:36px; height:20px; padding:0; margin:0;
+  border-radius:2px; border:none; background:var(--btn); position:relative; cursor:pointer; transition:background 0.2s;
+}
+input.switch::before {
+  content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:1px; background:#fff;
+  transition:transform 0.2s;
+}
+input.switch::after { content:""; position:absolute; top:-12px; bottom:-12px; left:-6px; right:-6px; }
+input.switch:checked { background:var(--text); }
+input.switch:checked::before { transform:translateX(16px); }
+/* the camera's recent frame, 16:9: the "No frame" plate lies under the picture, a broken picture is removed by settings.js */
+.camframe { position:relative; aspect-ratio:16/9; margin:16px 0 0; border:1px solid var(--line); border-radius:2px; background:#000; overflow:hidden; }
+.camframe-none { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font:12px var(--mono); letter-spacing:0.04em; text-transform:uppercase; }
+.camframe-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.camframe.small { flex:none; width:64px; margin:0; }
+.camframe.small .camframe-none { font-size:9px; text-align:center; letter-spacing:0; }
+.cam-actions { display:flex; align-items:center; gap:12px; }
+.cam-actions form { display:flex; margin:0; }
+.banner { border:1px solid var(--line); border-left-width:3px; border-radius:2px; background:var(--panel); padding:12px 16px; margin:16px 0 0; font-size:15px; }
+.banner.ok { border-left-color:var(--ok); }
+.banner.bad { border-left-color:var(--bad); }
+.busy { opacity:0.75; pointer-events:none; }
+.spinner { display:inline-block; width:15px; height:15px; margin-right:8px; vertical-align:-2px; border-radius:50%;
+  border:2px solid currentColor; border-right-color:transparent; animation:busy-spin 0.8s linear infinite; }
+@keyframes busy-spin { to { transform:rotate(360deg); } }
+.tag { margin-left:6px; font:13px var(--mono); color:var(--ok); }
+.tip { font-size:13px; color:var(--muted); line-height:1.45; padding:11px 16px; }
+/* the footer of a group: under it, outside the white */
+.foot { margin:7px 16px 0; font-size:13px; line-height:1.4; color:var(--muted); }
+.foot code { font-family:var(--mono); font-size:12px; color:var(--text); }
+.foot code span { white-space:nowrap; }
+.tip b { color:var(--text); }
+.tip ul { margin:6px 0 0; padding-left:18px; }
+
+/* actions: a row of the group in text (red for deleting); a dark button only for the main action of a form, the others have a line */
+.actions { display:flex; gap:12px; margin:24px 0 0; }
+.actions > button, .actions > a, .choice a {
+  flex:1; min-height:48px; padding:0 16px; border-radius:2px; border:1px solid var(--btn); font:inherit; font-weight:600;
+  text-align:center; text-decoration:none; cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.actions > button, .choice a.primary { background:var(--text); border-color:var(--text); color:#fff; }
+.actions > a, .choice a { background:var(--panel); color:var(--text); }
+.choice { display:flex; flex-direction:column; gap:12px; margin:24px 0 0; }
+.choice a { flex:none; }
+.row .k b { font-weight:600; }
+.signout { position:relative; margin:0; }
+.signout::before { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line); }
+.signout a { display:flex; align-items:center; min-height:44px; padding:11px 16px; color:var(--text);
+  text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+.grouphead { margin:36px 16px 0; font-size:13px; font-weight:600; }
+.grouphead + section { margin-top:28px; }
+section .actions { display:block; margin:0; }
+section .actions > button { display:block; width:calc(100% - 32px); margin:12px 16px 16px; flex:none; }
+section .actions > form { position:relative; margin:0; }
+section .actions > a, section .actions > form > button, .rec button, a.row.action {
+  display:flex; align-items:center; justify-content:flex-start; position:relative; width:100%; min-height:44px;
+  padding:11px 16px; margin:0; border:none; border-radius:0; background:none; font:inherit; font-weight:400;
+  color:var(--text); text-align:left; text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; cursor:pointer;
+}
+section .actions > a { flex:none; }
+section .actions > form > button.danger, .rec button { color:var(--bad); }
+.rec { margin:0; }
+.reccols { display:grid; grid-template-columns:1fr 1fr; }
+.reccols > :nth-child(even) { border-left:1px solid var(--line); }
+.reccols .rc { padding:11px 16px; line-height:1.25; min-width:0; }
+.reccols .rc .v { margin-top:2px; }
+.reccols form:last-child { grid-column:1 / -1; }  /* «Удалить все» — на обе колонки */
+.reccols form { position:relative; margin:0; }
+.reccols form::before { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line); }
+.reccols button { display:flex; align-items:center; width:100%; min-height:44px; padding:11px 16px; margin:0; border:none;
+  border-radius:0; background:none; font:inherit; text-align:left; color:var(--bad); cursor:pointer;
+  text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+.rec form { position:relative; margin:0; }
+a.row.action { text-align:left; }
+section > div + a.row.action::before { display:block; }  /* «Добавить камеру» под списком — через линию, как строки */
+details { margin-top:36px; }
+details summary {
+  list-style:none; cursor:pointer; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:2px; padding:11px 16px;
+  min-height:44px; display:flex; align-items:center; justify-content:space-between;
+}
+details summary::-webkit-details-marker { display:none; }
+details summary::after { content:"\203A"; color:var(--muted); font-size:22px; transition:transform 0.2s; }
+details[open] summary::after { transform:rotate(90deg); }
+details.tips[open] summary { border-bottom-color:transparent; }
+details.tips .tip { background:var(--panel); border:1px solid var(--line); border-top:0; border-radius:0 0 2px 2px; margin-top:-1px; }
+.check { display:flex; gap:10px; align-items:center; }
+.check input { width:auto; accent-color:var(--text); }
+.subtabs { display:flex; gap:20px; border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none; }
+.subtabs::-webkit-scrollbar { display:none; }
+.subtabs a {
+  flex:0 0 auto; display:flex; align-items:center; min-height:38px; text-decoration:none; color:var(--muted);
+  font:12px var(--mono); letter-spacing:0.06em; text-transform:uppercase; white-space:nowrap;
+  border-bottom:2px solid transparent; margin-bottom:-1px;
+}
+.subtabs a.active { color:var(--text); border-bottom-color:var(--text); }
+/* from 1024 px (a laptop): Settings is a list of tabs on the left and the chosen tab on the right (master-detail);
+   nested pages and the setup wizard are a centered column. Hover styles only for a mouse. */
+@media (min-width: 1024px) {
+  .row.field input:not([type=checkbox]):focus-visible, .row.field select:focus-visible { outline-offset:-2px; }
+  .viewbar { padding:0 32px; border-bottom:0; }
+  .viewbar .bar { max-width:640px; padding-top:20px; }
+  .viewbar .bar:empty { min-height:6vh; padding:0; }
+  .wrap { max-width:672px; padding:0 16px 64px; }
+  body.plain .wrap { max-width:560px; }
+  body.tabbed .viewbar { display:none; }
+  body.tabbed .wrap {
+    max-width:1280px; padding:24px 32px 64px; display:grid; grid-template-columns:240px minmax(0,640px);
+    column-gap:32px; align-items:start;
+  }
+  body.tabbed .wrap > .large { grid-column:1 / -1; padding-bottom:16px; }
+  body.tabbed .subtabs {
+    grid-column:1; grid-row:2; position:sticky; top:24px; margin-top:36px; flex-direction:column; gap:0; padding:0;
+    border:1px solid var(--line); border-radius:2px; background:var(--panel); overflow:visible;
+  }
+  body.tabbed .subtabs a {
+    flex:none; display:flex; align-items:center; min-height:40px; padding:0 14px; margin:0; text-align:left;
+    border-bottom:0; border-left:2px solid transparent;
+  }
+  body.tabbed .subtabs a + a { border-top:1px solid var(--line); }
+  body.tabbed .subtabs a.active { background:var(--bg); border-left-color:var(--text); }
+  .detail { grid-column:2; grid-row:2; min-width:0; }
+}
+@media (min-width: 1024px) and (hover: hover) {
+  .back:hover { opacity:0.7; }
+  body.tabbed .subtabs a:not(.active):hover { background:var(--fill); }
+  section .actions > a:hover, section .actions > form > button:hover, a.row.action:hover, details summary:hover {
+    background:var(--fill);
+  }
+  .signout a:hover, .actions > a:hover, .choice a:hover { background:var(--fill); }
+  .actions > button:hover, .choice a.primary:hover { background:#000; }
+}

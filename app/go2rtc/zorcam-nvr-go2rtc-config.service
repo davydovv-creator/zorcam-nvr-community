@@ -1,0 +1,6 @@
+[Unit]
+Description=Zorcam: apply zorcam.conf and the cameras to go2rtc
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart zorcam-nvr-go2rtc.service

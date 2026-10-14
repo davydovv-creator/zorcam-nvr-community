@@ -1,0 +1,36 @@
+name: Ошибка
+description: Что-то работает не так
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что делали, что ожидали, что получили. Скриншот приветствуется.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Где
+      description: Устройство и способ входа.
+      placeholder: iPhone, приложение с домашнего экрана, из интернета (4G), пользователь viewer
+  - type: input
+    id: when
+    attributes:
+      label: Когда
+      description: Время или «постоянно / иногда».
+  - type: input
+    id: build
+    attributes:
+      label: Сборка
+      description: Вывод `cat /opt/zorcam-nvr/gallery/BUILD` на Pi (версия — в шапке приложения).
+      placeholder: 0.2.0-3-gabc1234 от 06.10.2026
+  - type: textarea
+    id: logs
+    attributes:
+      label: Журналы
+      description: |
+        Вывод с Pi (пароли в журналах маскируются, но проверьте перед отправкой):
+        journalctl -u zorcam-nvr-gallery -u zorcam-nvr-capture -u zorcam-nvr-go2rtc --since "1 hour ago" --no-pager | tail -100
+      render: text

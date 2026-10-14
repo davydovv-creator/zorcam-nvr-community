@@ -1,0 +1,31 @@
+[Unit]
+Description=Zorcam go2rtc (RTSP -> WebRTC for Live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# the streams, one per camera of /var/lib/zorcam-nvr/config/cameras.json (no passwords in the file: echo: builds the URL)
+ExecStartPre=/usr/bin/python3 /opt/zorcam-nvr/gallery/zorcam_config.py --go2rtc-streams /dev/shm/zorcam_go2rtc_streams.yaml
+ExecStart=/usr/local/bin/go2rtc -c /opt/zorcam-nvr/go2rtc/go2rtc.yaml -c /dev/shm/zorcam_go2rtc_streams.yaml
+Restart=always
+RestartSec=5
+# its own system user without sudo or a login; the program in /opt/zorcam-nvr is read-only for it, it writes only
+# /var/lib/zorcam-nvr (settings, recordings) and /dev/shm/zorcam_*
+User=zorcam-nvr
+Group=zorcam-nvr
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+WorkingDirectory=/opt/zorcam-nvr/go2rtc
+# limits: a runaway process is restarted instead of freezing the whole Pi (1 GB RAM, SSH must stay reachable)
+# percent of physical memory: on a Pi 3 (~920 MB) it is the former ~150M / ~200M, on a Pi 4/5 the limits grow by themselves
+MemoryHigh=16%
+MemoryMax=22%
+MemorySwapMax=0
+CPUQuota=150%
+CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Zorcam recordings disk: check every minute (connect it again when it is back)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

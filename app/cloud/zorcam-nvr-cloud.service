@@ -1,0 +1,28 @@
+[Unit]
+Description=Zorcam cloud connection (tunnel to the cloud; idle until connected in Settings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /opt/zorcam-nvr/cloud/daemon.py
+Restart=always
+RestartSec=10
+# a loop pass can wait for the cloud (two 10 s requests and the file lock): room for it
+WatchdogSec=120
+User=zorcam-nvr
+Group=zorcam-nvr
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+WorkingDirectory=/opt/zorcam-nvr/cloud
+# frpc and this loop: small; the Pi's video services keep their memory
+MemoryHigh=60M
+MemoryMax=80M
+MemorySwapMax=0
+CPUQuota=30%
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

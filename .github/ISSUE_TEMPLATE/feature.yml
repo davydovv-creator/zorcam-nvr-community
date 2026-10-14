@@ -1,0 +1,43 @@
+name: Доработка
+description: Новая возможность или изменение поведения
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что нужно
+      description: Одной-двумя фразами, как для пользователя.
+      placeholder: Показывать ролики страницами, размер страницы — настройка 10/30/60.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем
+      description: Какую проблему это решает.
+      placeholder: Роликов сотни, страница долго грузится на телефоне.
+  - type: checkboxes
+    id: roles
+    attributes:
+      label: Кого касается
+      options:
+        - label: liveviewer (только Live)
+        - label: viewer (Live и записи)
+        - label: admin (всё: настройки, камеры)
+        - label: только Pi / сервисы, не интерфейс
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Критерии приёмки
+      description: Как на телефоне или на Pi понять, что всё работает. По пункту на строку.
+      placeholder: |
+        - Во вкладке «Видео» не больше 30 роликов, внизу «Назад / Вперёд»
+        - На /config можно выбрать 10, 30 или 60, после сохранения применяется
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Ограничения и заметки
+      description: Что нельзя ломать, без чего обойтись, ссылки, скриншоты.
+      placeholder: Без новых пакетов; не должно замедлять Live.

@@ -1,0 +1,36 @@
+# go2rtc: camera RTSP -> WebRTC for the Live tab (no transcoding).
+# go2rtc keeps one connection to each camera: the detector reads it all the time, Live players share it.
+
+# The streams (one per camera, named by its ID) are in a second config file, /dev/shm/zorcam_go2rtc_streams.yaml:
+# zorcam-nvr-go2rtc.service writes it from /var/lib/zorcam-nvr/config/cameras.json before go2rtc starts
+# (zorcam_config.py --go2rtc-streams) and restarts go2rtc when the cameras change.
+# The URL with the password is built by zorcam_config.py only when go2rtc connects (echo:), video only.
+
+api:
+  # localhost only: go2rtc does not check authorization for local requests,
+  # so its API stays closed; signaling goes through the gallery (port 80) with its login
+  listen: "127.0.0.1:1984"
+
+webrtc:
+  listen: ":8555"  # WebRTC media to the browser (TCP and UDP); forwarded to the Pi on the router
+  # Public address for viewers from the internet (8555 is the external port forwarded on the router): go2rtc learns
+  # it via STUN (cached for 5 min); the gallery adds the address the app is opened at, and through the Zorcam cloud
+  # its TURN server relays the video. On the local network the browser picks the Pi's direct address anyway.
+  candidates:
+    - stun:8555
+  # No STUN gathering for each viewer: go2rtc answers only when it is over, and a STUN server that does not answer
+  # (a VPN route on the router, a blocked address) held every Live start for 5 s. Its random-port candidates are of
+  # no use anyway: only 8555 is forwarded, and that address is above and added by the gallery.
+  ice_servers: []
+
+rtsp:
+  # localhost only: the detector and HLS read the cameras here (rtsp://127.0.0.1:8554/<id>), so the camera password
+  # never shows in their ffmpeg command lines and the camera keeps a single connection; not reachable from the network
+  listen: "127.0.0.1:8554"
+
+srtp:
+  listen: ""  # only needed for HomeKit
+
+log:
+  level: ${ZORCAM_GO2RTC_LOG:warn}  # debug with app/debug.sh on
+  time: ""

@@ -1,0 +1,50 @@
+# Zorcam settings. Path on the device: /var/lib/zorcam-nvr/config/zorcam.conf
+# Lines starting with # are comments. A commented-out parameter takes its default value.
+# Cameras are in cameras.json and their passwords in secrets.env: add and edit them on the Settings page.
+# Edit here or on the /config page (a user with the admin role).
+# The detector and the gallery notice changes to this file and restart within a minute.
+# Check the file: sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_config.py
+
+[language]
+# Default language of the interface and push notifications on devices where no language is picked (a language is picked on each device, on the Settings page): auto (device/browser language), en or ru (gallery)
+# language = auto
+
+[capture]
+# Motion analysis sensitivity threshold (0.02 = 2%). Lower is more sensitive (capture)
+# motion_threshold = 0.02
+# Reconnect when the camera sends no frames for longer than this, s (at least 3 keyframe intervals) (capture)
+# stall_timeout = 15
+# Timeout of RTSP network operations in ffmpeg, s (capture)
+# rtsp_timeout = 10
+
+[live]
+# If WebRTC does not connect within this many seconds, the player switches to HLS (gallery)
+# webrtc_fallback_seconds = 8
+# The HLS stream stops when the player has not requested it for this many seconds (gallery)
+# hls_idle_timeout = 30
+
+[notifications]
+# At most one motion notification per this many seconds (gallery)
+# motion_cooldown = 60
+# Push notifications about failures and recovery (gallery)
+# health = yes
+# Remind about an unresolved failure every this many minutes (0: no reminders) (gallery)
+# health_repeat_minutes = 60
+
+[health]
+# Check the system state every this many seconds (gallery)
+# check_interval = 60
+# Failure when the camera sends no frames for longer than this, s (gallery)
+# no_frames_seconds = 120
+# Below this much free disk space, MB, the oldest recordings are removed (a push to admins) (gallery)
+# min_free_disk_mb = 1024
+# Failure when the CPU temperature is above this, °C (gallery)
+# max_cpu_temp = 80
+
+[gallery]
+# Clips per page on the Videos tab: 10, 30 or 60 (gallery)
+# videos_per_page = 30
+# Stay signed in for this many days without entering the password (extended on every visit) (gallery)
+# session_days = 365
+# Which stand this device is: prod, stage or test. Non-prod stands show a TEST / STAGE badge in the app and default to the cloud of the same stand (cloud.stage.zorcam.ru, cloud.test.zorcam.ru) (gallery)
+# environment = prod

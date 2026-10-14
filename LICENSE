@@ -1,0 +1,395 @@
+# Zorcam Community License
+
+Version 1.0 — 14 October 2026
+
+Copyright (c) 2024–2026 Sergey Aleksandrovich Davydov. All rights reserved, except as expressly granted below.
+
+**This is not an open source license.** The source code is published so that you can read it, install the
+software on your own devices and suggest improvements. Redistribution, selling and forks are not permitted.
+The Russian text follows the English one.
+
+---
+
+## English
+
+### 0. What this document is
+
+0.1. This is a license agreement between Sergey Aleksandrovich Davydov, a citizen of the Russian Federation
+(the "Licensor"), and you (the "Licensee", "you"). Under it the Licensor grants a simple (non-exclusive)
+license to use the Software. The agreement is offered to everyone and is concluded in the simplified procedure
+of Article 1286.1 of the Civil Code of the Russian Federation ("open license" in the sense of that Article;
+it is still not an "open source" license).
+
+0.2. You accept this License in full by downloading, installing, copying or using the Software. If you do not
+agree, do not download, install or use the Software.
+
+0.3. Rights that are not expressly granted in this License are not granted (Civil Code of the Russian
+Federation, Article 1235(1)).
+
+### 1. Definitions
+
+- **Software**: the Zorcam NVR program (community edition) published by the Licensor: the source code, the
+  official distributions (archives, .deb packages) and the documentation, in every version. It includes any
+  part of these and any Modification of them.
+- **Official Sources**: the repository `https://github.com/davydovv-creator/zorcam-nvr-community` and other
+  places the Licensor names in that repository.
+- **Your Devices**: computers (for example, a Raspberry Pi) that you own or lawfully control for your own needs.
+- **Modification**: any change to the Software, translation or adaptation of it, or a work based on it.
+- **Third-Party Components**: programs that are not part of the Software and that the Software uses or that its
+  installer downloads, under their own licenses (Section 6).
+- **Zorcam Cloud**: the online service of the Licensor (or of a person named by him) for remote access to
+  Zorcam devices, offered under separate terms.
+
+### 2. What you may do
+
+Subject to the conditions of this License, the Licensor grants you, free of charge, for the whole term of the
+copyright in the Software and in all countries of the world, a non-exclusive, non-transferable license, without
+the right to grant sublicenses, to:
+
+2.1. download the Software from the Official Sources and reproduce it as far as needed to install, run, update
+and back it up on Your Devices;
+
+2.2. read and study the source code;
+
+2.3. install and use the Software on any number of Your Devices for the purposes of Section 3;
+
+2.4. make Modifications for your own use on Your Devices, subject to Section 4;
+
+2.5. fork the repository on GitHub using GitHub's own functionality, solely to view the code and to prepare and
+submit contributions (issues, pull requests) under `CONTRIBUTING.md` and the Zorcam Contributor License
+Agreement.
+
+### 3. Permitted purposes
+
+3.1. You may use the Software for personal, family and household purposes.
+
+3.2. You may also use it in your own business or professional activity, for example to watch your own shop,
+office, warehouse or site. A person (for example, an installer) may install the Software on Your Devices on your
+behalf. That person may charge for their work but not for the Software itself.
+
+3.3. You may let your family members, employees and guests view your cameras through the Software.
+
+3.4. Without a separate written agreement with the Licensor, you may not use the Software to provide services to
+third parties. This includes hosted or "as a service" video surveillance, remote monitoring for other people, and
+operating the Software on devices you provide to customers.
+
+### 4. What you may not do
+
+Unless the Licensor agrees in writing, you may not:
+
+4.1. sell, rent, lease, lend for a fee or otherwise commercially provide the Software or copies of it, or grant
+sublicenses;
+
+4.2. sell, rent or lease devices with the Software (or a Modification) pre-installed, or bundle the Software with
+any product or service you sell, except as allowed in Section 5;
+
+4.3. publish or distribute the Software, Modifications, forks or builds of them (in source or binary form, as
+images, packages or containers). The only exceptions are Section 2.5 and contributions under Section 7;
+
+4.4. modify the Software, or use the Software or any part of it, to connect to cloud services or relay servers
+other than Zorcam Cloud; to emulate, replace or bypass Zorcam Cloud, its device pairing, authentication, signatures
+or usage limits; or to reuse the code that implements the Zorcam Cloud protocol in other programs;
+
+4.5. remove, hide or change copyright notices, this License, license notices of Third-Party Components or
+references to them;
+
+4.6. use the names "Zorcam", "Зоркам" or the Zorcam logo, except to truthfully say that you use the Software.
+This License grants no rights to any trademarks or other means of individualization.
+
+Nothing in this License limits rights that, under the applicable law, cannot be limited by contract. This
+includes, in particular, the rights of a lawful user of a program under Article 1280(2)–(3) of the Civil Code of
+the Russian Federation.
+
+### 5. Passing on your own device
+
+You may give or sell to another person a device of yours on which you installed the Software for your own use, as
+a one-off transaction and not as a business, provided the Software is not modified and no separate fee is charged
+for it. The new owner may use the Software only by accepting this License.
+
+### 6. Third-party components
+
+6.1. The Software uses Third-Party Components that are not covered by this License, in particular:
+
+- FFmpeg: from the operating system packages (Debian); GNU LGPL 2.1+ / GNU GPL 2+, depending on the build;
+- go2rtc (author: Alexey Khit): MIT License;
+- frp / frpc (fatedier and contributors): Apache License 2.0;
+- Python, python3-pil (Pillow), python3-cryptography, curl and other operating-system packages: their own
+  licenses, listed in `/usr/share/doc/<package>/copyright` on the device.
+
+6.2. Each Third-Party Component is governed only by its own license. This License does not restrict any rights
+you have under those licenses. The installer downloads go2rtc and frpc from their authors' official releases.
+If an official distribution of the Software contains a Third-Party Component, the text of its license is
+included in the distribution.
+
+### 7. Contributions
+
+Issues and pull requests are welcome under `CONTRIBUTING.md`. Pull requests are accepted only after the
+contributor signs the Zorcam Contributor License Agreement. The Licensor is not obliged to review, accept or use
+any contribution.
+
+### 8. Updates, support and Zorcam Cloud
+
+8.1. The Licensor is not obliged to provide updates, fixes or support, or to keep the Official Sources online.
+
+8.2. Zorcam Cloud is optional and is governed by its own terms. This License gives no right to use Zorcam Cloud.
+
+### 9. No warranty
+
+9.1. The Software is provided free of charge, "as is" and "as available". To the maximum extent permitted by the
+applicable law, the Licensor gives no warranties, express or implied. This includes, without limitation,
+warranties of fitness for a particular purpose, uninterrupted or error-free operation, and that video, images
+or notifications will be recorded, kept or delivered.
+
+9.2. The Software is not a certified security, alarm or life-safety system. Do not rely on it as the only means
+of protecting life, health or property.
+
+9.3. You are responsible for using cameras and recordings lawfully. This includes the laws on privacy, personal
+data and images of individuals in the places you watch.
+
+### 10. Limitation of liability
+
+10.1. To the maximum extent permitted by the applicable law, the Licensor is not liable for lost profits,
+indirect damages, or loss or disclosure of data, recordings or images arising out of the use of the Software
+or inability to use it. Where liability cannot be excluded, it is limited to actual damage (real loss).
+
+10.2. Nothing in this License excludes or limits liability for intentional breach, or any other liability
+that the applicable law does not allow to exclude or limit.
+
+### 11. Termination
+
+11.1. The license is granted on the condition that you comply with this License. Any use of the Software beyond
+the rights granted, or after the license ends, infringes the exclusive right in the Software.
+
+11.2. If you breach this License, the Licensor may terminate it by notice to you (including by e-mail, a message
+on GitHub, or a notice to the contact you used). If you remedy a first breach within 30 days of the notice, your
+license continues.
+
+11.3. You may stop using the Software at any time by deleting all copies of it.
+
+11.4. When the license ends, you must stop using the Software and delete all copies of it. Sections 6, 9, 10,
+12 and 13 survive termination.
+
+### 12. Versions of this License
+
+The Licensor may publish new versions of this License. Each release of the Software is licensed under the version
+of this License included in that release. A new version applies to releases published with it, and to earlier
+releases only if you choose to accept it.
+
+### 13. Governing law and disputes
+
+13.1. This License is governed by the law of the Russian Federation.
+
+13.2. Before going to court, a party sends the other a written claim; the time limit for a reply is 30 days.
+
+13.3. Disputes are settled by the court with jurisdiction at the Licensor's place of residence (Moscow). If the
+Licensee is acting as an entrepreneur or legal entity, the dispute goes to the corresponding arbitrazh (state
+commercial) court. This does not apply where mandatory rules, including consumer protection laws, give the
+Licensee the right to choose the court.
+
+### 14. Language
+
+This License is made in English and Russian. If the versions differ, the Russian text prevails.
+
+### 15. Contact
+
+- Questions about this License and requests for permissions: zorcamnvr@yandex.ru
+- Security reports: zorcamnvr@yandex.ru (do not use public issues)
+
+---
+
+## Русский
+
+# Лицензия Zorcam Community
+
+Версия 1.0 — 14 октября 2026 г.
+
+© 2024–2026 Давыдов Сергей Александрович. Все права защищены, кроме прямо предоставленных ниже.
+
+**Это не лицензия открытого программного обеспечения (open source).** Исходный код опубликован, чтобы его можно
+было читать, устанавливать программу на свои устройства и предлагать улучшения. Распространять, продавать
+и делать форки нельзя.
+
+### 0. Что это за документ
+
+0.1. Это лицензионный договор между гражданином Российской Федерации Давыдовым Сергеем Александрович
+(«Лицензиар») и вами («Лицензиат», «вы»). По нему Лицензиар предоставляет простую (неисключительную) лицензию на
+использование Программы. Договор предлагается неопределённому кругу лиц и заключается в упрощённом порядке по
+статье 1286.1 Гражданского кодекса Российской Федерации (открытая лицензия в смысле этой статьи; от этого он не
+становится лицензией open source).
+
+0.2. Скачивая, устанавливая, копируя или используя Программу, вы принимаете эту Лицензию полностью. Если вы не
+согласны, не скачивайте, не устанавливайте и не используйте Программу.
+
+0.3. Права, прямо не предоставленные этой Лицензией, не считаются предоставленными (п. 1 ст. 1235 ГК РФ).
+
+### 1. Термины
+
+- **Программа** — программа для ЭВМ Zorcam NVR (редакция community), опубликованная Лицензиаром: исходный код,
+  официальные дистрибутивы (архивы, пакеты .deb) и документация во всех версиях. Сюда входят любая их часть и
+  любая их Переработка.
+- **Официальные источники** — репозиторий `https://github.com/davydovv-creator/zorcam-nvr-community` и другие
+  места, которые Лицензиар укажет в этом репозитории.
+- **Ваши устройства** — компьютеры (например, Raspberry Pi), которые принадлежат вам или находятся в вашем
+  правомерном распоряжении для ваших собственных нужд.
+- **Переработка** — любое изменение Программы, её перевод или адаптация, а также произведение, созданное на её
+  основе.
+- **Сторонние компоненты** — программы, которые не входят в Программу и которые она использует или которые
+  скачивает её установщик; они распространяются по своим лицензиям (раздел 6).
+- **Облако Zorcam** — онлайн-сервис Лицензиара (или указанного им лица) для удалённого доступа к устройствам
+  Zorcam. Предоставляется на отдельных условиях.
+
+### 2. Что можно
+
+При соблюдении условий этой Лицензии Лицензиар безвозмездно предоставляет вам простую (неисключительную)
+лицензию на весь срок действия исключительного права на Программу, на территории всего мира, без права
+передачи и без права выдавать сублицензии. По ней вы вправе:
+
+2.1. скачивать Программу из Официальных источников и воспроизводить её (в том числе записывать в память ЭВМ)
+в объёме, нужном для установки, работы, обновления и резервного копирования на Ваших устройствах;
+
+2.2. знакомиться с исходным кодом и изучать его;
+
+2.3. устанавливать Программу на любое число Ваших устройств и использовать её в целях раздела 3;
+
+2.4. перерабатывать Программу для собственного использования на Ваших устройствах с учётом раздела 4;
+
+2.5. делать форк репозитория средствами GitHub только для просмотра кода, подготовки и отправки предложений
+(issue, pull request) по правилам `CONTRIBUTING.md` и Соглашения участника Zorcam (CLA).
+
+### 3. Разрешённые цели
+
+3.1. Программу можно использовать для личных, семейных и домашних нужд.
+
+3.2. Её можно использовать и в вашей собственной предпринимательской или профессиональной деятельности:
+например, для наблюдения за вашим магазином, офисом, складом или участком. Установить Программу на Ваши
+устройства по вашему поручению может другое лицо (например, монтажник). Оно вправе брать плату за свою работу,
+но не за Программу.
+
+3.3. Вы можете дать членам семьи, работникам и гостям доступ к просмотру ваших камер через Программу.
+
+3.4. Без отдельного письменного договора с Лицензиаром нельзя использовать Программу для оказания услуг третьим
+лицам. Это, в частности, «облачное» видеонаблюдение или видеонаблюдение как услуга, удалённый мониторинг для
+других лиц и работа Программы на устройствах, которые вы предоставляете клиентам.
+
+### 4. Что нельзя
+
+Без письменного согласия Лицензиара нельзя:
+
+4.1. продавать, сдавать в аренду или прокат, передавать за плату или иным образом предоставлять Программу или
+её экземпляры на коммерческой основе, выдавать сублицензии;
+
+4.2. продавать или сдавать в аренду устройства с предустановленной Программой (или её Переработкой), включать
+Программу в продаваемые вами товары или услуги, кроме случая из раздела 5;
+
+4.3. публиковать или распространять Программу, её Переработки, форки или сборки в исходном или исполняемом виде,
+в том числе как образы, пакеты или контейнеры. Исключения — п. 2.5 и предложения по разделу 7;
+
+4.4. перерабатывать Программу или использовать её или её части для подключения к облачным сервисам и
+серверам-ретрансляторам, кроме Облака Zorcam; для имитации, замены или обхода Облака Zorcam, привязки устройств
+к нему, его аутентификации, подписей или ограничений; использовать код, реализующий протокол Облака Zorcam,
+в других программах;
+
+4.5. удалять, скрывать или изменять уведомления об авторских правах, текст этой Лицензии, уведомления о
+лицензиях Сторонних компонентов и ссылки на них;
+
+4.6. использовать обозначения «Zorcam», «Зоркам» и логотип Zorcam, кроме правдивого указания на то, что вы
+пользуетесь Программой. Эта Лицензия не даёт прав на товарные знаки и иные средства индивидуализации.
+
+Эта Лицензия не ограничивает права, которые по применимому праву нельзя ограничить договором, в том числе права
+пользователя программы по пунктам 2 и 3 статьи 1280 ГК РФ.
+
+### 5. Передача своего устройства
+
+Своё устройство, на которое вы установили Программу для собственных нужд, можно подарить или продать другому
+лицу, если это разовая сделка, а не предпринимательская деятельность, Программа не изменена и отдельная плата за
+неё не берётся. Новый владелец пользуется Программой, только приняв эту Лицензию.
+
+### 6. Сторонние компоненты
+
+6.1. Программа использует Сторонние компоненты, на которые эта Лицензия не распространяется, в частности:
+
+- FFmpeg из пакетов операционной системы (Debian): GNU LGPL 2.1+ / GNU GPL 2+, в зависимости от сборки;
+- go2rtc (автор — Alexey Khit): лицензия MIT;
+- frp / frpc (fatedier и участники): Apache License 2.0;
+- Python, python3-pil (Pillow), python3-cryptography, curl и другие пакеты операционной системы: их собственные
+  лицензии, перечисленные в `/usr/share/doc/<пакет>/copyright` на устройстве.
+
+6.2. Каждый Сторонний компонент регулируется только своей лицензией. Эта Лицензия не ограничивает ваши права по
+таким лицензиям. go2rtc и frpc установщик скачивает из официальных выпусков их авторов. Если официальный
+дистрибутив Программы содержит Сторонний компонент, текст его лицензии входит в дистрибутив.
+
+### 7. Предложения участников
+
+Issue и pull request приветствуются по правилам `CONTRIBUTING.md`. Pull request принимается только после того,
+как участник подпишет Соглашение участника Zorcam (CLA). Лицензиар не обязан рассматривать, принимать или
+использовать предложения.
+
+### 8. Обновления, поддержка и Облако Zorcam
+
+8.1. Лицензиар не обязан выпускать обновления и исправления, оказывать поддержку, а также поддерживать
+доступность Официальных источников.
+
+8.2. Облако Zorcam используется по желанию и на своих условиях. Эта Лицензия не даёт права пользоваться Облаком
+Zorcam.
+
+### 9. Отсутствие гарантий
+
+9.1. Программа предоставляется безвозмездно, «как есть» и «как доступна». В максимальной степени, допустимой
+применимым правом, Лицензиар не даёт никаких явных или подразумеваемых гарантий. В частности, он не гарантирует
+пригодность для определённой цели, бесперебойную и безошибочную работу, запись, сохранность и доставку видео,
+снимков и уведомлений.
+
+9.2. Программа не является сертифицированной системой охраны, сигнализации или обеспечения безопасности жизни.
+Не полагайтесь на неё как на единственное средство защиты жизни, здоровья или имущества.
+
+9.3. Вы отвечаете за законность использования камер и записей, в том числе за соблюдение законодательства о
+неприкосновенности частной жизни, персональных данных и изображении гражданина в местах, где ведёте наблюдение.
+
+### 10. Ограничение ответственности
+
+10.1. В максимальной степени, допустимой применимым правом, Лицензиар не отвечает за упущенную выгоду, косвенные
+убытки, утрату или раскрытие данных, записей или изображений в связи с использованием Программы или
+невозможностью её использовать. Если ответственность нельзя исключить, она ограничивается реальным ущербом.
+
+10.2. Эта Лицензия не исключает и не ограничивает ответственность за умышленное нарушение обязательства и иную
+ответственность, исключение или ограничение которой не допускается применимым правом.
+
+### 11. Прекращение
+
+11.1. Лицензия действует при условии соблюдения этой Лицензии. Использование Программы за пределами
+предоставленных прав или после прекращения лицензии нарушает исключительное право на Программу.
+
+11.2. Если вы нарушили эту Лицензию, Лицензиар вправе отказаться от договора, направив вам уведомление (в том
+числе по электронной почте, сообщением на GitHub или по контакту, через который вы обращались). Если вы
+устраните первое нарушение в течение 30 дней с момента уведомления, лицензия продолжает действовать.
+
+11.3. Вы можете в любой момент отказаться от Лицензии, удалив все экземпляры Программы.
+
+11.4. После прекращения лицензии вы обязаны прекратить использование Программы и удалить все её экземпляры.
+Разделы 6, 9, 10, 12 и 13 продолжают действовать.
+
+### 12. Версии Лицензии
+
+Лицензиар может публиковать новые версии этой Лицензии. Каждый выпуск Программы предоставляется по той версии
+Лицензии, которая входит в этот выпуск. Новая версия применяется к выпускам, опубликованным вместе с ней, а к
+прежним выпускам — только если вы сами решите её принять.
+
+### 13. Применимое право и споры
+
+13.1. К этой Лицензии применяется право Российской Федерации.
+
+13.2. До обращения в суд сторона направляет другой стороне письменную претензию. Срок ответа — 30 дней.
+
+13.3. Споры рассматриваются судом по месту жительства Лицензиара (Москва). Если Лицензиат действует как
+индивидуальный предприниматель или юридическое лицо, спор рассматривает соответствующий арбитражный суд. Это
+правило не применяется, если императивные нормы, в том числе законодательство о защите прав потребителей, дают
+Лицензиату право выбрать суд.
+
+### 14. Язык
+
+Лицензия составлена на английском и русском языках. При расхождении преимущество имеет русский текст.
+
+### 15. Контакты
+
+- Вопросы по Лицензии и запросы разрешений: zorcamnvr@yandex.ru
+- Сообщения об уязвимостях: zorcamnvr@yandex.ru (не в публичных issue)
