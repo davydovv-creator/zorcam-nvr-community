@@ -34,6 +34,7 @@ import onvif  # noqa: E402
 import zorcam_cloud  # noqa: E402
 import zorcam_storage  # noqa: E402
 import yandex  # noqa: E402
+import stun  # noqa: E402
 import zorcam_i18n as i18n  # noqa: E402
 from zorcam_i18n import Msg, Raw, t  # noqa: E402
 from zorcam_html import cat, esc, h, js_json, trusted  # noqa: E402
@@ -262,11 +263,18 @@ def push_users(cam_id=None):
                                                                  and zorcam_users.wants_push(u, cam_id)))}
 
 
-def motion_push(cam_id, body):
+def motion_push_url(cam_id, at=None):
+    """Адрес, который открывает push о движении: Timelapse камеры на моменте движения (at — YYYYMMDD_HHMMSS);
+    времени нет — просто Timelapse камеры."""
+    return f"/?tab=all&cam={quote(cam_id, safe='')}" + (f"&at={at}" if at else "")
+
+
+def motion_push(cam_id, body, at=None):
     """Push о движении тем, кому доступна камера; итог — в журнал."""
     users = push_users(cam_id)
     delivered, total = PUSH.send_all(lambda s: {
-        "title": t(push_lang(s), "push.motion"), "body": body, "tag": "motion-" + cam_id, "url": "/?tab=live",
+        "title": t(push_lang(s), "push.motion"), "body": body, "tag": "motion-" + cam_id,
+        "url": motion_push_url(cam_id, at),
     }, log, users=users)
     log(f"motion push {cam_id}: delivered to {delivered} of {total} subscriptions"
         + ("" if total else f" (none of users who can see the camera: {', '.join(sorted(users)) or '-'})"))
@@ -812,7 +820,8 @@ self.addEventListener('notificationclick', function(e) {
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
       if (new URL(c.url).origin !== self.location.origin) continue;
-      if (new URL(c.url).pathname === '/') {
+      // the gallery is open: a push with a moment (at) goes there, the others just switch to Live
+      if (new URL(c.url).pathname === '/' && !new URL(url).searchParams.has('at')) {
         c.postMessage({ type: 'open-live' });  // the gallery is already open: switch to Live
         return c.focus();
       }
@@ -988,8 +997,18 @@ SPEED_ICON = ('<svg viewBox="0 0 24 24" width="20" height="20" fill="none" strok
               '<path d="M12 5.5v1.5M5.6 8.1l1 1M18.4 8.1l-1 1"/></svg>')
 
 
-def timelapse_html(cam, lang):
-    """Вкладка Timelapse: плеер таймлапса (его оживляет static/timelapse.js)."""
+CLOSE_ICON = ('<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" '
+              'stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>')
+
+
+def valid_at(at):
+    """Момент движения из адреса push: YYYYMMDD_HHMMSS, настоящая дата и время; иное — игнорируется."""
+    return bool(at) and re.fullmatch(r"\d{8}_\d{6}", at) is not None and parse_ts(at) is not None
+
+
+def timelapse_html(cam, lang, at=None):
+    """Вкладка Timelapse: плеер таймлапса (его оживляет static/timelapse.js); at — момент (YYYYMMDD_HHMMSS), на котором
+    он встаёт (открыт из push о движении)."""
     speeds = cat(h("button", f"×{n}", type="button", class_="pill active" if n == 1 else "pill", data_speed=n)
                  for n in (0.25, 0.5, 1, 2, 4))
     stage = h("div", h("canvas", class_="tl-canvas", width=320, height=180),
@@ -1008,10 +1027,19 @@ def timelapse_html(cam, lang):
                  h("button", trusted(CHEVRON_RIGHT), type="button", class_="tl-calnav next", aria_label=t(lang, "tl.days_later")),
                  class_="tl-cal", hidden=True)
     speeds = cat(h("span", trusted(SPEED_ICON), class_="tl-speed-icon", title=t(lang, "tl.speed"), aria_hidden="true"), speeds)
-    return h("div", stage, controls, h("div", speeds, class_="seg tl-speed", role="group", aria_label=t(lang, "tl.speed")),
-             calendar,
+    # окно ролика над плеером (static/timelapse.js кладёт в .tl-modal-body плеер со страницы /watch)
+    head = h("div", h("span", class_="tl-modal-time"),
+             h("button", trusted(CLOSE_ICON), type="button", class_="tl-modal-x", aria_label=t(lang, "tl.clip_close")),
+             class_="tl-modal-head")
+    box = h("div", head, h("div", class_="tl-modal-body"),
+            h("a", t(lang, "tl.clip_download"), href="#", class_="tl-modal-dl", download=True),
+            class_="tl-modal-box", role="dialog", aria_modal="true")
+    modal = h("div", box, class_="tl-modal", hidden=True)
+    return h("div", stage, h("p", class_="tl-note", role="status"), controls,
+             h("div", speeds, class_="seg tl-speed", role="group", aria_label=t(lang, "tl.speed")),
+             calendar, modal,
              h("p", t(lang, "tl.keys"), class_="tl-keys"),
-             class_="tl", data_cam=cam["id"], data_api=f"/timelapse/{cam['id']}")
+             class_="tl", data_cam=cam["id"], data_api=f"/timelapse/{cam['id']}", data_at=at)
 
 
 def ptz_html(c, lang, csrf):
@@ -1060,12 +1088,14 @@ def render_embed(role, user, lang, cam_id, ice=()):
                            data_script=data_script(lang, PAGE_SCRIPTS, page_data(ice)))
 
 
-def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_id=None, ice=(), csrf=""):
+def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_id=None, ice=(), csrf="", at=None):
     live_only = role == "liveviewer"
     if live_only or active_tab not in ("live",) + RECORD_TABS:
         active_tab = "live"
     cams = user_cameras(user, role)
-    cam = next((c for c in cams if c["id"] == cam_id), cams[0] if cams else None)
+    found = next((c for c in cams if c["id"] == cam_id), None)
+    cam = found or (cams[0] if cams else None)
+    at = at if found and valid_at(at) else None  # момент из push — только для камеры, которая названа и видна
     raw_dir, video_dir = cam_dirs(cam["id"]) if cam else ("", "")
     videos = [] if live_only or not cam else list_videos(cam["id"], pending=True)
 
@@ -1111,7 +1141,7 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
     if not cam:
         all_body = no_cameras(lang, role)
     else:
-        all_body = cat(h("div", cam_tabs("all"), class_="toolbar"), timelapse_html(cam, lang))
+        all_body = cat(h("div", cam_tabs("all"), class_="toolbar"), timelapse_html(cam, lang, at))
 
     # Live: камеры в 1, 2 или 3 колонки (выбор хранится на устройстве, см. JS), над каждой — её название;
     # выключенных камер в Live нет, их записи остаются в «Видео» и в Timelapse
@@ -1812,6 +1842,12 @@ def status_rows(lang):
             [model] * bool(model) + [t(lang, "st.ram", size=fmt_ram(lang, ram))] * bool(ram))))
     if ENVIRONMENT != "prod":
         rows.append(row(t(lang, "st.environment"), ENVIRONMENT))
+    ext = stun.snapshot()  # внешний адрес для WebRTC из интернета: не определён — янтарным, это не тревога
+    if ext["checked"]:
+        rows.append(row(t(lang, "st.external"), t(lang, "st.external_ok", ip=ext["ip"], server=ext["server"]) if ext["ip"]
+                        else t(lang, "st.external_none"), cls="" if ext["ip"] else "warn",
+                        sub=None if ext["ip"] else t(lang, "st.external_why_cgnat" if ext["why"] else "st.external_why"),
+                        sub_cls="warn"))
     tz = pi_timezone()  # время записей и снимков; пояс сменили, а сервисы не перезапущены — красным
     rows.append(row(t(lang, "st.timezone"), f'{tz["name"]} ({tz["offset"]})', cls="bad" if tz["pending"] else "",
                     sub=t(lang, "st.tz_pending", zone=tz["pending"]) if tz["pending"] else None, sub_cls="bad"))
@@ -3000,7 +3036,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_file(self, path, ctype, cache="no-cache"):
+    def send_file(self, path, ctype, cache="no-cache", filename=None):
         size = os.path.getsize(path)
         rng = self.headers.get("Range")
         start, end = 0, size - 1
@@ -3028,6 +3064,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -3145,12 +3183,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 vpage = 1
             ice = cloud_ice(self.headers.get("X-Zorcam-Ice")) if self.via_cloud() else []
+            stun.note_cloud_ice(ice)
             if tab == "live" and qs.get("embed", [""])[0] == "1":
                 self.send_html(render_embed(self.role, self.user, self.lang, qs.get("cam", [""])[0], ice=ice))
                 return
             # старые ссылки на сетку снимков (mode=, horizon=, fpage=) открывают ту же вкладку: параметры не читаются
             self.send_html(render(tab, self.role, self.user, vpage, self.lang, qs.get("cam", [None])[0], ice=ice,
-                                  csrf=csrf_token(self.get_session_token())))
+                                  csrf=csrf_token(self.get_session_token()), at=qs.get("at", [None])[0]))
             return
 
         if re.fullmatch(r"/ptz/[^/]+", path):
@@ -3343,9 +3382,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             if kind == "vid":
-                self.send_file(fpath, "video/mp4")
+                # ?dl=1 — «Скачать» в окне ролика над Timelapse: файлом, а не в плеере браузера
+                dl = parse_qs(parsed.query).get("dl") == ["1"]
+                self.send_file(fpath, "video/mp4",
+                               filename=re.sub(r"[^A-Za-z0-9._-]", "_", f"{cam_id}_{name}") if dl else None)
                 return
             media = watch_media(cam_id, video_dir, name, video_meta(video_dir, name), self.lang)
+            if parse_qs(parsed.query).get("frag") == ["1"]:  # окно ролика над Timelapse: только плеер, без страницы
+                self.send_html(str(media))
+                return
             newer, older = watch_neighbours(cam_id, name)
             caption = f'{camera(cam_id)["name"]} · {format_caption(name)}'
             self.send_html(render_template("watch", self.lang, caption=esc(caption), media=media, newer=esc(newer),
@@ -3447,12 +3492,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(502, "go2rtc is not available")
             return
         text = answer.decode("utf-8", errors="replace")
-        # адрес, по которому открыта галерея из интернета, — тоже кандидат (если внешний IP не задан вручную);
-        # но не адрес облака: <id>.<домен облака> ведёт на его сервер, а там порта 8555 нет
+        # кандидаты, по которым браузер из интернета дойдёт до проброшенного порта: внешний IP, найденный по STUN
+        # (работает и через облако: устройство само за NAT с пробросом, TURN облака остаётся запасным путём), и адрес,
+        # по которому открыта галерея (домен DDNS) — но не адрес облака: <id>.<домен облака> ведёт на его сервер, а там
+        # порта 8555 нет; домен, который у нас резолвится в частный адрес (KeenDNS из дома), тоже не годится
+        if self.via_cloud():
+            stun.note_cloud_ice(cloud_ice(self.headers.get("X-Zorcam-Ice")))
         host = public_host(self.request_host()) if not self.via_cloud() else None
-        ip = host_ip(host) if host else None
-        if ip:
-            text = add_candidates(text, ip)
+        page_ip = host_ip(host) if host else None
+        ips = []
+        for ip in (stun.external()[0], page_ip if page_ip and stun.usable(page_ip) else None):
+            if ip and ip not in ips:
+                ips.append(ip)
+                text = add_candidates(text, ip)
+        if ips:
             answer = text.encode()
         log(f"webrtc offer from {self.client_desc()}: candidates: {sdp_candidates(text)}")
         self.send_response(201)
@@ -3747,7 +3800,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         ts = parse_ts(str(data.get("name", "")))
         body = f"{cam['name']}, {ts.strftime('%H:%M:%S')}" if ts else cam["name"]
-        threading.Thread(target=motion_push, args=(cam_id, body), daemon=True).start()
+        threading.Thread(target=motion_push, args=(cam_id, body, ts.strftime("%Y%m%d_%H%M%S") if ts else None),
+                         daemon=True).start()
 
     def config_save(self):
         form = self.admin_form()
@@ -4226,4 +4280,5 @@ if __name__ == "__main__":
     if YANDEX is not None:
         threading.Thread(target=YANDEX.loop, daemon=True).start()
     threading.Thread(target=cloud_event_loop, daemon=True).start()
+    threading.Thread(target=stun.loop, args=(log,), daemon=True).start()
     Server(("0.0.0.0", PORT), Handler).serve_forever()

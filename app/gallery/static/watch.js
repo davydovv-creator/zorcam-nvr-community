@@ -37,37 +37,4 @@
 })();
 
 
-// a clip with metadata: the frame and the Motion badge are on while currentTime >= the motion time (the frame
-// is also on the poster before playback starts); the mark on the scale under the video is the motion time, a tap seeks to it
-(function() {
-  var frame = document.querySelector('.vframe');
-  if (!frame) return;
-  var video = frame.querySelector('video'), mbox = frame.querySelector('.mbox'), badge = frame.querySelector('.mbadge');
-  var scale = document.querySelector('.mscale'), tick = scale && scale.querySelector('.mtick');
-  var prog = scale && scale.querySelector('.mprog');
-  var at = frame.hasAttribute('data-motion') ? parseFloat(frame.getAttribute('data-motion')) : null;
-  var started = false;
-  function update() {
-    var on = at !== null && video.currentTime >= at;
-    if (mbox) mbox.classList.toggle('on', on || !started);
-    if (badge) badge.classList.toggle('on', on);
-    if (prog && video.duration) prog.style.width = Math.min(100, video.currentTime / video.duration * 100) + '%';
-  }
-  function ready() {
-    placeBox(frame, video);
-    if (scale && video.duration) {
-      tick.style.left = Math.min(100, at / video.duration * 100) + '%';
-      scale.classList.add('ready');
-    }
-    update();
-  }
-  video.addEventListener('playing', function() { started = true; update(); });
-  video.addEventListener('seeked', function() { started = true; update(); });
-  video.addEventListener('timeupdate', update);
-  video.addEventListener('loadedmetadata', ready);
-  video.addEventListener('durationchange', ready);
-  video.addEventListener('resize', ready);
-  window.addEventListener('resize', ready);
-  if (tick) tick.addEventListener('click', function() { video.currentTime = Math.min(at, video.duration || at); });
-  ready();
-})();
+initMotionClip(document);

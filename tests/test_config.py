@@ -165,7 +165,7 @@ def test_go2rtc_finds_its_public_address_itself():
     assert "secrets.env" not in unit  # go2rtc needs no secrets: the camera URL comes from --rtsp-source
     with open(os.path.join(REPO, "app", "go2rtc", "go2rtc.yaml"), encoding="utf-8") as f:
         text = f.read()
-    assert "    - stun:8555" in text
+    assert "\n  candidates:" not in text  # the gallery adds the STUN address itself (stun.py)
     assert "\n  ice_servers: []" in text  # no STUN gathering: it held every Live start while a STUN server was silent
     with open(os.path.join(REPO, "app", "go2rtc", "zorcam-nvr-go2rtc-config.path"), encoding="utf-8") as f:
         text = f.read()

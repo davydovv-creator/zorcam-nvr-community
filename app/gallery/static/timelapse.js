@@ -21,6 +21,12 @@ var timelapse = (function() {
   var day = '', days = [], info = {}, cells = {}, today = '', daysRaw = '', daysAt = 0;  // day: the chosen calendar day, '' = a period
   var LANG = document.documentElement.lang || 'en';
   try { day = localStorage.getItem('zorcam_tl_day') || ''; } catch (e) {}
+  // opened from a motion push (?at=YYYYMMDD_HHMMSS, checked by the server): that day, paused at the motion; the day
+  // remembered in localStorage stays as it was
+  var at = /^\d{8}_\d{6}$/.test(root.getAttribute('data-at') || '') ? root.getAttribute('data-at') : '';
+  var note = root.querySelector('.tl-note'), modal = root.querySelector('.tl-modal');
+  var modalBody = modal.querySelector('.tl-modal-body'), modalTime = modal.querySelector('.tl-modal-time');
+  var modalDl = modal.querySelector('.tl-modal-dl'), modalFrom = null;
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function stamp(t) {
@@ -58,18 +64,23 @@ var timelapse = (function() {
     found = found.slice(0, MAX_LINKS).sort(function(p, q) { return p.t - q.t; });
     var box = document.createElement('div');
     box.className = 'tl-vlist';
-    function row(href, text, label) {
+    function row(href, text, label, clip) {
       var a = document.createElement('a');
       a.className = 'tl-vlink';
       a.href = href;
       a.textContent = text;
       if (label) a.setAttribute('aria-label', label);
+      if (clip) a.addEventListener('click', function(e) {  // the clip opens over the player; a new tab keeps the page
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
+        e.preventDefault();
+        openClip(clip, a);
+      });
       box.appendChild(a);
     }
     found.forEach(function(v) {
       var at = v.n.substr(9, 2) + ':' + v.n.substr(11, 2) + ':' + v.n.substr(13, 2);
       row('/watch/' + encodeURIComponent(cam) + '/' + encodeURIComponent(v.n), T['tl.video'] + ' ' + at + ' ›',
-        T['tl.video_open'] + ', ' + at);
+        T['tl.video_open'] + ', ' + at, v.n);
     });
     if (more) row('/?tab=videos&cam=' + encodeURIComponent(cam), T['tl.all_videos'] + ' ›');
     strip.appendChild(box);
@@ -83,6 +94,72 @@ var timelapse = (function() {
     return true;
   }
   function say(text) { msg.textContent = text || ''; }
+
+  // The clip over the player: the same markup and script as the watch page (the fragment of /watch/<camera>/<clip>),
+  // the timelapse under it stays paused on its frame.
+  var clipToken = 0, RATIO_KEY = 'zorcam_clip_ratio_' + cam;
+  // The proportion of the camera's clips (the main stream): the place for the clip is kept in it from the start, the poster
+  // (a frame of the second stream, often of another proportion) is stretched to it, so the window does not jump on load
+  function clipRatio() {
+    try { var r = parseFloat(localStorage.getItem(RATIO_KEY)); if (r > 0.2 && r < 5) return r; } catch (e) {}
+    return 16 / 9;
+  }
+  function fitClip(video) {
+    video.style.aspectRatio = String(clipRatio());
+    video.classList.add('pre');
+    // registered before initMotionClip: the frame of motion is placed after the proportion is set
+    video.addEventListener('loadedmetadata', function() {
+      if (!video.videoWidth || !video.videoHeight) return;
+      var r = video.videoWidth / video.videoHeight;
+      video.style.aspectRatio = String(r);
+      video.classList.remove('pre');
+      try { localStorage.setItem(RATIO_KEY, String(r)); } catch (e) {}
+    });
+  }
+  function openClip(name, from) {
+    var mine = ++clipToken, ts = timeOf(name), url = '/watch/' + encodeURIComponent(cam) + '/' + encodeURIComponent(name);
+    pause();
+    modalFrom = from || null;
+    modalBody.innerHTML = '';
+    var ph = document.createElement('div');
+    ph.className = 'tl-modal-ph';
+    ph.style.aspectRatio = String(clipRatio());
+    modalBody.appendChild(ph);
+    modalTime.textContent = stamp(ts) + (zone ? ' ' + zone : '');
+    modalDl.href = '/vid/' + encodeURIComponent(cam) + '/' + encodeURIComponent(name + '.mp4') + '?dl=1';
+    modal.hidden = false;
+    document.body.classList.add('modal-open');
+    modal.querySelector('.tl-modal-x').focus();
+    fetch(url + '?frag=1', { credentials: 'same-origin' })
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+      .then(function(html) {
+        if (mine !== clipToken) return;
+        modalBody.innerHTML = html;  // built by the server from the escaped parts (watch_media)
+        var video = modalBody.querySelector('video');
+        if (video) fitClip(video);
+        initMotionClip(modalBody);
+      })
+      .catch(function() {
+        if (mine !== clipToken) return;
+        var p = document.createElement('p');
+        modalBody.innerHTML = '';
+        p.className = 'tl-modal-err';
+        p.textContent = T['tl.clip_error'];
+        modalBody.appendChild(p);
+      });
+  }
+  function closeClip() {
+    if (modal.hidden) return;
+    clipToken++;
+    modal.hidden = true;
+    modalBody.innerHTML = '';  // the video stops with its element
+    document.body.classList.remove('modal-open');
+    if (modalFrom && document.contains(modalFrom)) modalFrom.focus();
+    modalFrom = null;
+  }
+  modal.addEventListener('click', function(e) {  // the dark field around the clip, the cross
+    if (e.target === modal || (e.target.closest && e.target.closest('.tl-modal-x'))) closeClip();
+  });
 
   function dropFrame(j) {
     var e = cache[j];
@@ -428,13 +505,33 @@ var timelapse = (function() {
     if (pick) { load(period, pick.d); reveal(pick.d, true); }
   }
 
-  // p: a period (always today: since midnight); d: a calendar day YYYY-MM-DD instead of it. The choice is remembered
-  function load(p, d) {
+  // The address of a push (?cam=…&at=…) is used once: a reload must not jump back to that moment
+  function forgetAt() {
+    try {
+      var url = new URL(location.href);
+      url.searchParams.delete('cam');
+      url.searchParams.delete('at');
+      history.replaceState(null, '', url);
+    } catch (e) {}
+  }
+  // the first motion frame at or after the moment t (seconds, as in times); none: the nearest frame of the day
+  function frameFor(t) {
+    for (var i = 0; i < frames.length; i++) if (times[i] >= t && isMotion(frames[i])) return i;
+    var lo = 0, hi = frames.length - 1;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid + 1; else hi = mid; }
+    return lo && t - times[lo - 1] < times[lo] - t ? lo - 1 : lo;
+  }
+
+  // p: a period (always today: since midnight); d: a calendar day YYYY-MM-DD instead of it. The choice is remembered;
+  // mode 'at': the day of a push, 'gone': today instead of it, the notice stays — neither is remembered
+  function load(p, d, mode) {
     var mine = ++token;
     d = d || '';
     day = d;
+    if (!mode) note.textContent = '';
     try {
-      if (d) { localStorage.setItem('zorcam_tl_day', d); } else { localStorage.removeItem('zorcam_tl_day'); }
+      if (mode) { /* the remembered day stays */ }
+      else if (d) { localStorage.setItem('zorcam_tl_day', d); } else { localStorage.removeItem('zorcam_tl_day'); }
     } catch (e) {}
     if (!d) period = p;
     markDay();
@@ -456,14 +553,23 @@ var timelapse = (function() {
         videos = (data.videos || []).map(function(n) { return { n: n, t: timeOf(n) }; });
         clipLen = data.clip || 10;
         frames = data.frames; base = data.base; zone = (data.tz && data.tz.label) || '';
+        if (mode === 'at' && !frames.length) {  // the day is gone (cleanup): today and a notice
+          note.textContent = T['tl.deleted'].replace('{when}', at.substr(6, 2) + '.' + at.substr(4, 2) + ' ' +
+            at.substr(9, 2) + ':' + at.substr(11, 2));
+          forgetAt();
+          load('today', '', 'gone');
+          return;
+        }
+        if (mode) forgetAt();
         if (!frames.length) { say(T['tl.empty']); return; }  // "Loading…" stays until the first frame is drawn
         buildStrip();
         range.max = Math.round(total); range.disabled = false;
         labelSpeeds();
         goal = 0;
-        pump();  // the first frame only: it plays on the play button, not by itself
+        if (mode === 'at') seek(frameFor(timeOf(at)));  // stands paused on the motion; it plays on the play button
+        else pump();  // the first frame only: it plays on the play button, not by itself
       })
-      .catch(function() { if (mine === token) say(T['tl.error']); });
+      .catch(function() { if (mine === token) { say(T['tl.error']); if (mode) forgetAt(); } });
   }
 
   root.querySelectorAll('[data-speed]').forEach(function(b) {
@@ -506,7 +612,7 @@ var timelapse = (function() {
     seek(j);
     if (showLink(j)) pause();  // the link would be stale as soon as the frames moved on
   });
-  document.addEventListener('click', function(e) { if (!strip.contains(e.target)) hideLink(); });
+  document.addEventListener('click', function(e) { if (!strip.contains(e.target) && !modal.contains(e.target)) hideLink(); });
 
   window.addEventListener('resize', function() {  // also the turn of the phone
     clearTimeout(relayout);
@@ -519,6 +625,10 @@ var timelapse = (function() {
   // the arrows step a frame (Shift: 10), Home and End go to the ends, [ and ] change the day. The slider keeps its own arrows and Home/End;
   // a focused button or link keeps its Space
   document.addEventListener('keydown', function(e) {
+    if (!modal.hidden) {
+      if (e.key === 'Escape') { closeClip(); e.preventDefault(); }
+      return;
+    }
     if (!active || e.altKey || e.ctrlKey || e.metaKey) return;
     var el = e.target, tag = (el && el.tagName) || '';
     if ((el && el.isContentEditable) || tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && el !== range)) return;
@@ -547,12 +657,13 @@ var timelapse = (function() {
   return {
     setActive: function(on) {
       active = on;
-      if (!on) { pause(); return; }
+      if (!on) { pause(); closeClip(); return; }  // the clip does not play on behind another tab
       if (started) return;
       started = true;
       say(T['tl.loading']);
       // the calendar first (a stored day that has no snapshots any more falls back to the period); it is cached on the Pi
       var go = function() {
+        if (at) { day = at.substr(0, 4) + '-' + at.substr(4, 2) + '-' + at.substr(6, 2); load(period, day, 'at'); return; }
         if (day && !(info[day] && info[day].frames)) day = '';
         load(period, day);
       };

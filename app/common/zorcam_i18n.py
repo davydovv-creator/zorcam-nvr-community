@@ -227,6 +227,11 @@ STRINGS = {
     "cam.tabs_prev": {"en": "Earlier cameras", "ru": "Камеры слева"},
     "cam.tabs_next": {"en": "Later cameras", "ru": "Камеры справа"},
     "tl.all_videos": {"en": "Go to videos", "ru": "Перейти в видео"},
+    # {when} подставляет JS: ДД.ММ ЧЧ:ММ
+    "tl.deleted": {"en": "Recordings for {when} have been deleted", "ru": "Записи за {when} уже удалены"},
+    "tl.clip_error": {"en": "Could not load the video", "ru": "Не удалось загрузить видео"},
+    "tl.clip_close": {"en": "Close", "ru": "Закрыть"},
+    "tl.clip_download": {"en": "Download", "ru": "Скачать"},
     "tl.video_open": {"en": "Open the video of this motion", "ru": "Открыть видео этого движения"},
     "tl.keys": {"en": "Keyboard: Space plays or pauses, ← → step a frame (Shift: 10), Home and End jump to the ends, "
                       "[ and ] go to the previous and next day",
@@ -403,6 +408,19 @@ STRINGS = {
     "st.ram": {"en": "RAM {size}", "ru": "ОЗУ {size}"},
     "st.ram_gb": {"en": "{n} GB", "ru": "{n} ГБ"},
     "st.ram_mb": {"en": "{n} MB", "ru": "{n} МБ"},
+    "st.external": {"en": "External address", "ru": "Внешний адрес"},
+    "st.external_ok": {"en": "{ip} (STUN {server})", "ru": "{ip} (STUN {server})"},
+    "st.external_none": {"en": "not determined", "ru": "не определён"},
+    "st.external_why": {
+        "en": "No STUN server answered. Live from the internet may fall back to the delayed HLS stream; "
+              "through the Zorcam cloud it works.",
+        "ru": "Ни один STUN-сервер не ответил. Live из интернета может перейти на HLS с задержкой; "
+              "через облако Zorcam он работает."},
+    "st.external_why_cgnat": {
+        "en": "The address the provider gives is not public (CGNAT or a private network): the router port cannot be "
+              "reached directly from the internet. Through the Zorcam cloud Live still works.",
+        "ru": "Адрес от провайдера не публичный (CGNAT или частная сеть): до порта роутера напрямую из интернета не "
+              "дойти. Через облако Zorcam Live работает."},
     "st.timezone": {"en": "Time zone", "ru": "Часовой пояс"},
     "st.tz_pending": {"en": "The device is set to {zone} now: it applies after a restart of Zorcam",
                       "ru": "На устройстве уже выставлен {zone}: он заработает после перезапуска Zorcam"},

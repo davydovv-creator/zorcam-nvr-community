@@ -96,6 +96,29 @@ def test_overloaded_pi_with_five_cameras():
     assert found["Clips"][0] == diagnose.WARN and found["Clips"][1].startswith("1 clips not saved")
 
 
+def test_motion_push_lines_are_not_camera_errors():
+    """The gallery logs "motion push cam94: delivered to 0 of 0 subscriptions (none of users who can see the camera: -)":
+    not a camera connection problem."""
+    push = ("2026-10-15T18:46:43+03:00 nvr2 python3[971]: [2026-10-15T18:46:43] motion push cam94: delivered to 0 of 0 "
+            "subscriptions (none of users who can see the camera: -)")
+    found = by_area(diagnose.analyze({**HEALTHY, "services": [push] * 5}))
+    assert found["Camera"][0] == diagnose.OK
+
+
+def test_unknown_external_address_is_a_warning():
+    """The gallery logs the STUN result only when it changes; the last line is the state."""
+    head = "nvr python3[971]: [2026-10-16T10:00:00] stun: external address"
+    lost = f"2026-10-16T10:00:00+03:00 {head} not determined: no STUN server answered"
+    found = f"2026-10-16T09:00:00+03:00 {head} 93.184.216.34 (via stun.cloudflare.com:3478)"
+    area = by_area(diagnose.analyze({**HEALTHY, "services": [lost]}))
+    assert area["External address"][0] == diagnose.WARN
+    assert by_area(diagnose.analyze({**HEALTHY, "services": [found, lost]}))["External address"][0] == diagnose.WARN
+    ok = by_area(diagnose.analyze({**HEALTHY, "services": [lost, found]}))["External address"]
+    assert ok[0] == diagnose.OK and "93.184.216.34" in ok[1]
+    assert "External address" not in by_area(diagnose.analyze(HEALTHY))
+    assert by_area(diagnose.analyze({**HEALTHY, "services": [lost]}))["Camera"][0] == diagnose.OK
+
+
 def test_memory_events_file(tmp_path):
     path = tmp_path / "memory.events"
     path.write_text("low 0\nhigh 42\nmax 0\noom 0\n")

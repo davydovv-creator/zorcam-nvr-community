@@ -53,6 +53,7 @@ SERVICE_PATTERNS = {
     "reconnect": r"reconnecting|no frames for",
     "slow_write": r"debug: slow write",
     "clip_error": r"stream clip error",
+    "stun": r"stun: external address",  # the gallery logs it only when the result changes: the last line is the state
 }
 CGROUP = "/sys/fs/cgroup/system.slice/{}.service/memory.events"
 
@@ -285,7 +286,9 @@ def analyze(src):
         out.append((OK, "Services", "no restarts, watchdog timeouts or crashes found", [], ""))
 
     # camera
-    cam = [line for line in svc["camera"] if "zorcam-nvr-capture" in line or "daemon.py" in line or "camera:" in line]
+    # the gallery's push lines ("... who can see the camera: -") are not camera errors
+    cam = [line for line in svc["camera"] if "motion push" not in line
+           and ("zorcam-nvr-capture" in line or "daemon.py" in line or "camera:" in line)]
     reasons = Counter(re.search(r"camera: ([^|]+)", line).group(1).strip() for line in cam
                       if re.search(r"camera: ([^|]+)", line))
     per_camera = Counter(m.group(1) for line in svc["reconnect"] if (m := re.search(r"\] \[([^\]]+)\] ", line)))
@@ -298,6 +301,16 @@ def analyze(src):
         out.append((WARN, "Camera", f"connection problems: {what}", examples(cam or svc["reconnect"]), advice))
     else:
         out.append((OK, "Camera", "no connection problems found", [], ""))
+
+    # the external address for WebRTC from the internet (STUN): not a failure, Live falls back to HLS
+    stun_lines = svc["stun"]
+    if stun_lines and re.search(r"stun: external address (not determined|lost)", stun_lines[-1]):
+        out.append((WARN, "External address", "not determined: no usable external address for WebRTC from the internet",
+                    examples(stun_lines[-3:]),
+                    "Live from the internet falls back to HLS. Check that the device can reach a STUN server (UDP 3478) "
+                    "and that the provider gives a public IP address (not CGNAT); the Zorcam cloud works either way."))
+    elif stun_lines:
+        out.append((OK, "External address", re.sub(r"^.*stun: external address ", "", stun_lines[-1]).strip(), [], ""))
 
     # clips without the camera video: the stream recorder had no segments (a placeholder was saved instead)
     if svc["clip_error"]:

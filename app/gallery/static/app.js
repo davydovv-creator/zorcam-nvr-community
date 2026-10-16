@@ -28,6 +28,41 @@ function placeBox(host, media) {
   m.style.width = (b[2] - b[0]) * dw / cw * 100 + '%';
   m.style.height = (b[3] - b[1]) * dh / ch * 100 + '%';
 }
+// a clip with metadata (the watch page and the window over the timelapse; root is where its player is): the frame and the
+// Motion badge are on while currentTime >= the motion time (the frame is also on the poster before playback starts); the
+// mark on the scale under the video is the motion time, a tap seeks to it
+function initMotionClip(root) {
+  var frame = root.querySelector('.vframe');
+  if (!frame) return;
+  var video = frame.querySelector('video'), mbox = frame.querySelector('.mbox'), badge = frame.querySelector('.mbadge');
+  var scale = root.querySelector('.mscale'), tick = scale && scale.querySelector('.mtick');
+  var prog = scale && scale.querySelector('.mprog');
+  var at = frame.hasAttribute('data-motion') ? parseFloat(frame.getAttribute('data-motion')) : null;
+  var started = false;
+  function update() {
+    var on = at !== null && video.currentTime >= at;
+    if (mbox) mbox.classList.toggle('on', on || !started);
+    if (badge) badge.classList.toggle('on', on);
+    if (prog && video.duration) prog.style.width = Math.min(100, video.currentTime / video.duration * 100) + '%';
+  }
+  function ready() {
+    placeBox(frame, video);
+    if (scale && video.duration) {
+      tick.style.left = Math.min(100, at / video.duration * 100) + '%';
+      scale.classList.add('ready');
+    }
+    update();
+  }
+  video.addEventListener('playing', function() { started = true; update(); });
+  video.addEventListener('seeked', function() { started = true; update(); });
+  video.addEventListener('timeupdate', update);
+  video.addEventListener('loadedmetadata', ready);
+  video.addEventListener('durationchange', ready);
+  video.addEventListener('resize', ready);
+  window.addEventListener('resize', ready);
+  if (tick) tick.addEventListener('click', function() { video.currentTime = Math.min(at, video.duration || at); });
+  ready();
+}
 // Pull to refresh (the main page, Settings -> Cameras and Status): only in the app on the Home Screen, Safari and Chrome have it
 // built in. window.ptrBeforeReload is called before the reload, if set
 (function() {

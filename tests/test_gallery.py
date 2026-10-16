@@ -140,6 +140,7 @@ ACCESS = [
     (f"/vid/front/{VIDEO}.mp4",                   403, 200, 200),
     (f"/thumb/front_videos/{VIDEO}.jpg",          403, 200, 200),
     (f"/img/front/{FRAME}",                       403, 200, 200),
+    (f"/watch/front/{VIDEO}?frag=1",              403, 200, 200),  # the clip window over the timelapse
     ("/?tab=all",                                 200, 200, 200),  # snapshots: the timelapse only (a liveviewer gets Live)
     ("/settings",                                 200, 200, 200),
     ("/settings?tab=notify",                      200, 200, 200),  # a liveviewer gets the General tab instead
@@ -429,6 +430,70 @@ def test_motion_push_names_the_camera(server, monkeypatch):
         assert request(server, "POST", "/internal/motion", body, headers={"Content-Type": "application/json"})[0] == 200
     time.sleep(0.3)
     assert sorted(m({"lang": "en"})["body"] for m in sent) == ["Front door, 12:00:00", "Yard, 12:00:00"]
+
+
+def test_motion_push_opens_the_timelapse_at_the_moment(server, monkeypatch):
+    sent = []
+    monkeypatch.setattr(app, "_last_push", {})
+    monkeypatch.setattr(app.PUSH, "count", lambda: 1)
+    monkeypatch.setattr(app.PUSH, "send_all", lambda message, log, users=None: (sent.append(message), (1, 1))[1])
+    body = json.dumps({"name": "20260926_120007_123", "camera": "front"})
+    assert request(server, "POST", "/internal/motion", body, headers={"Content-Type": "application/json"})[0] == 200
+    time.sleep(0.3)
+    msg = sent[0]({"lang": "en"})
+    assert msg["url"] == "/?tab=all&cam=front&at=20260926_120007" and msg["tag"] == "motion-front"
+    assert app.motion_push_url("a b/c") == "/?tab=all&cam=a%20b%2Fc"
+
+
+def test_timelapse_takes_the_moment_of_a_push(server, cookies):
+    """?cam=&at= from the push: the moment goes to the player (only a real YYYYMMDD_HHMMSS and only for a camera the user
+    sees); an unknown or closed camera opens the ordinary Records."""
+    at = "20260926_120007"
+    body = request(server, "GET", f"/?tab=all&cam=front&at={at}", cookie=cookies["bob"])[2]
+    assert f'data-cam="front" data-api="/timelapse/front" data-at="{at}"' in body
+    for bad in ("2026", "20260926_120007x", "20261326_120007", "20260926_250007", "<b>", ""):
+        body = request(server, "GET", f"/?tab=all&cam=front&at={bad}", cookie=cookies["bob"])[2]
+        assert "data-at" not in body, bad
+    body = request(server, "GET", f"/?tab=all&cam=nope&at={at}", cookie=cookies["bob"])
+    assert body[0] == 200 and "data-at" not in body[2]
+    zorcam_users.set_cameras("bob", {"front"})
+    try:
+        body = request(server, "GET", f"/?tab=all&cam=yard&at={at}", cookie=cookies["bob"])
+        assert body[0] == 200 and "data-at" not in body[2] and 'data-cam="yard"' not in body[2]
+    finally:
+        zorcam_users.set_cameras("bob", {"front", "yard"})
+
+
+def test_clip_window_over_the_timelapse(server, cookies):
+    """The links over the strip open the clip over the player: the fragment of the watch page (video, frame, badge, scale)
+    for viewers; the timelapse markup has the window with Close and Download (?dl=1 gives the file as an attachment),
+    both texts in two languages; the script gets the notice texts."""
+    vids = os.path.join(app.BASE_DIR, app.cam_dirs("front")[1])
+    meta = "20260926_103400_000"
+    path = os.path.join(vids, meta + ".json")
+    try:
+        with open(path, "w") as f:
+            json.dump({"box": [0.25, 0.5, 0.5, 0.75], "motion_at": 3.4}, f)
+        frag = request(server, "GET", f"/watch/front/{meta}?frag=1", cookie=cookies["bob"])
+        assert frag[0] == 200 and "<html" not in frag[2] and "viewbar" not in frag[2]
+        assert 'class="vframe" data-motion="3.4"' in frag[2] and 'class="mbadge"' in frag[2] and 'class="mscale"' in frag[2]
+        assert request(server, "GET", f"/watch/front/{meta}?frag=1", cookie=cookies["guest"])[0] == 403
+        assert request(server, "GET", f"/watch/nope/{meta}?frag=1", cookie=cookies["bob"])[0] == 404
+    finally:
+        os.remove(path)
+    plain = request(server, "GET", f"/vid/front/{VIDEO}.mp4", cookie=cookies["bob"])
+    assert plain[0] == 200 and "Content-Disposition" not in plain[1]
+    dl = request(server, "GET", f"/vid/front/{VIDEO}.mp4?dl=1", cookie=cookies["bob"])
+    assert dl[0] == 200 and dl[1]["Content-Disposition"] == f'attachment; filename="front_{VIDEO}.mp4"'
+    assert request(server, "GET", f"/vid/front/{VIDEO}.mp4?dl=1", cookie=cookies["guest"])[0] == 403
+    body = request(server, "GET", "/?tab=all&cam=front", cookie=cookies["bob"])[2]
+    assert 'class="tl-modal" hidden' in body and 'class="tl-modal-x"' in body
+    assert f'class="tl-modal-dl" download>{t("en", "tl.clip_download")}<' in body
+    ru = request(server, "GET", "/?tab=all&cam=front", cookie=cookies["bob"] + "; zorcam_lang=ru")[2]
+    assert t("ru", "tl.clip_close") in ru and t("ru", "tl.clip_download") in ru
+    assert t("ru", "tl.deleted") != t("en", "tl.deleted") and "{when}" in t("ru", "tl.deleted")
+    assert t("en", "tl.deleted").format(when="26.09 12:00") == "Recordings for 26.09 12:00 have been deleted"
+    assert json.dumps(t("en", "tl.deleted")) in body
 
 
 def test_login_ignores_the_letter_case(server):
@@ -739,8 +804,10 @@ def test_settings_tabs_of_admin(server, cookies):
         assert not re.search(r"@media\s*\((?!min-width: 1024px)", assets(server, body))
         # a phone-wide column
         assert '<div class="viewbar"><div class="bar">' in body and "max-width:560px" in assets(server, body)
-    assert request(server, "GET", "/settings", cookie=cookies["admin"])[2] == \
-        request(server, "GET", "/settings?tab=nope", cookie=cookies["admin"])[2].replace("tab=nope", "tab=general")
+    # the header clock may tick between the two requests
+    def page(path):
+        return re.sub(r">\d\d:\d\d:\d\d<", ">00:00:00<", request(server, "GET", path, cookie=cookies["admin"])[2])
+    assert page("/settings") == page("/settings?tab=nope").replace("tab=nope", "tab=general")
 
 
 def user_section(body, name):
@@ -1431,6 +1498,73 @@ def test_webrtc_signalling_adds_the_candidate(server, cookies, monkeypatch):
     finally:
         fake.shutdown()
         fake.server_close()
+
+
+def test_webrtc_answer_gets_the_stun_address(server, cookies, monkeypatch):
+    """The external IP found by STUN goes into every answer (at home, from the internet, through the cloud); the page
+    address is added too when it is public and different, a domain resolving to a private IP (KeenDNS at home) is not."""
+    import http.server
+    import threading
+    import stun
+
+    class Go2rtc(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = ANSWER.encode()
+            self.send_response(201)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+    fake = http.server.HTTPServer(("127.0.0.1", 0), Go2rtc)
+    threading.Thread(target=fake.serve_forever, daemon=True).start()
+    monkeypatch.setattr(app, "GO2RTC_WEBRTC_URL", f"http://127.0.0.1:{fake.server_address[1]}/api/webrtc?src=")
+    monkeypatch.setitem(stun._state, "ip", "93.184.216.34")
+    monkeypatch.setattr(stun, "_cloud_hosts", [])
+    monkeypatch.setattr(app, "host_ip", lambda host: {"home.keenetic.link": "192.168.1.1",
+                                                      "cam.example.org": "151.101.1.1"}.get(host))
+    try:
+        def offer(host, **extra):
+            return request(server, "POST", "/live/webrtc?cam=front", "v=0", cookie=cookies["bob"],
+                           headers={"Content-Type": "application/sdp", "Host": host, **extra})
+        body = offer("192.168.1.10")[2]
+        assert body.count(" 93.184.216.34 8555 typ host") == 4 and "151.101.1.1" not in body
+        body = offer("home.keenetic.link")[2]  # resolves to the router at home: not a candidate
+        assert body.count(" 93.184.216.34 8555 typ host") == 4 and "192.168.1.1 " not in body
+        body = offer("cam.example.org")[2]
+        assert body.count(" 93.184.216.34 8555 typ host") == 4 and body.count(" 151.101.1.1 8555 typ host") == 4
+        assert offer("93.184.216.34")[2].count(" 93.184.216.34 8555 typ host") == 4  # no duplicates
+        ice = json.dumps([{"urls": ["turn:turn.example.org:3480"], "username": "u", "credential": "c"}])
+        through_cloud = offer("localhost", **{"X-Zorcam-Identity": "x", "X-Zorcam-Ice": ice})[2]
+        assert through_cloud.count(" 93.184.216.34 8555 typ host") == 4
+        assert ("turn.example.org", 3480) in stun.servers()
+        monkeypatch.setitem(stun._state, "ip", None)
+        assert offer("192.168.1.10")[2] == ANSWER  # not determined: as go2rtc made it
+    finally:
+        fake.shutdown()
+        fake.server_close()
+
+
+def test_status_shows_the_external_address(server, cookies, monkeypatch):
+    """Settings -> Status: the STUN address and server; not determined - amber (warn), not a problem for the summary."""
+    import stun
+    monkeypatch.setattr(stun, "_state", {"ip": "93.184.216.34", "at": 1, "server": "stun.cloudflare.com:3478",
+                                          "checked": 1, "why": None, "logged": None})
+    body = request(server, "GET", "/settings?tab=status", cookie=cookies["admin"])[2]
+    assert (f'<div class="k">{t("en", "st.external")}</div><div class="v ">93.184.216.34 (STUN stun.cloudflare.com:3478)</div>'
+            in body)
+    monkeypatch.setitem(stun._state, "ip", None)
+    monkeypatch.setitem(stun._state, "server", None)
+    body = request(server, "GET", "/settings?tab=status", cookie=cookies["admin"])[2]
+    assert f'<div class="v warn">{t("en", "st.external_none")}</div>' in body and t("en", "st.external_why") in body
+    monkeypatch.setitem(stun._state, "why", "100.64.1.2")
+    assert t("en", "st.external_why_cgnat") in request(server, "GET", "/settings?tab=status", cookie=cookies["admin"])[2]
+    ru = request(server, "GET", "/settings?tab=status", cookie=cookies["admin"], headers={"Cookie": "zorcam_lang=ru"})
+    assert ru[0] == 200
+    monkeypatch.setitem(stun._state, "checked", None)  # no check yet: no row
+    assert t("en", "st.external") not in request(server, "GET", "/settings?tab=status", cookie=cookies["admin"])[2]
 
 
 def test_no_external_ip_setting(server, cookies):

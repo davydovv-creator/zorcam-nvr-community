@@ -91,3 +91,21 @@ body.tabbed { padding-bottom:calc(60px + env(safe-area-inset-bottom)); }
 .ptr.ready svg { transform:rotate(180deg); }
 .ptr.loading svg { animation:spin 0.8s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
+
+/* a clip with the detector's metadata: the frame and the Motion badge over the picture, a scale with the motion mark under it */
+.vwrap { display:flex; flex-direction:column; max-width:100%; }
+.vframe { position:relative; display:flex; }
+.vframe .mbox { display:none; }
+.vframe .mbox.on, .vframe .mbadge.on { display:block; }
+.mbadge {
+  display:none; position:absolute; z-index:2; pointer-events:none;
+  left:10px; right:auto; top:10px; padding:2px 6px; background:var(--bad); border-radius:2px;
+  color:#fff; font:12px/1.4 var(--mono); letter-spacing:0.04em; text-transform:uppercase;
+}
+.mscale { position:relative; height:28px; visibility:hidden; }
+.mscale.ready { visibility:visible; }
+.mscale::before, .mprog { content:""; position:absolute; left:0; top:13px; height:2px; background:var(--btn); }
+.mscale::before { right:0; }
+.mprog { width:0; background:var(--text); }
+.mtick { position:absolute; top:0; width:44px; height:28px; margin-left:-22px; padding:0; border:none; background:none; cursor:pointer; }
+.mtick::after { content:""; position:absolute; left:50%; top:6px; width:3px; height:16px; margin-left:-1.5px; border-radius:0; background:var(--bad); }

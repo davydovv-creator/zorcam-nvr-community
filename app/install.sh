@@ -226,6 +226,7 @@ copy "$SRC/gallery/app.py"           "$PREFIX/gallery/app.py"       755 && RESTA
 copy "$SRC/gallery/push.py"          "$PREFIX/gallery/push.py"      644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/onvif.py"         "$PREFIX/gallery/onvif.py"     644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/yandex.py"        "$PREFIX/gallery/yandex.py"    644 && RESTART_GALLERY=1 || true
+copy "$SRC/gallery/stun.py"          "$PREFIX/gallery/stun.py"      644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_users.py"   "$PREFIX/gallery/zorcam_users.py" 755 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_html.py"    "$PREFIX/gallery/zorcam_html.py"  644 && RESTART_GALLERY=1 || true
 copy "$SRC/common/zorcam_config.py"   "$PREFIX/capture/zorcam_config.py" 644 && RESTART_CAPTURE=1 || true

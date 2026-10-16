@@ -27,6 +27,7 @@ section > h2 + .rec > form:first-child::before, section > h2 + .actions > :first
 .row .v { text-align:right; max-width:55%; overflow-wrap:anywhere; color:var(--muted); font:13px var(--mono); }
 .v.ok, .row .sub.ok { color:var(--ok); }
 .row .sub.warn { color:var(--warn); }
+.v.warn { color:var(--warn); }
 .v.bad, .row .sub.bad, .row .k.bad { color:var(--bad); }
 .v.muted, .row .k.muted { color:var(--btn); }
 /* switched off is not an error: amber, the name is muted */

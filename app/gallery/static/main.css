@@ -205,6 +205,29 @@ body.embed .empty { color:rgba(255,255,255,0.7); padding:24px 16px; }
 .tl-vlist { position:absolute; z-index:3; bottom:100%; transform:translateX(-50%); display:flex; flex-direction:column; gap:1px; min-width:150px; }
 .tl-vlink { display:flex; align-items:center; justify-content:center; min-height:44px; padding:0 14px; border-radius:2px;
   background:rgba(0,0,0,0.6); color:#fff; font:12px var(--mono); text-transform:uppercase; white-space:nowrap; text-decoration:none; }
+.tl-note { margin:6px 0 0; color:var(--muted); font:13px/1.4 var(--mono); }
+.tl-note:empty { display:none; }
+/* the clip over the player: a dark field, the clip as on the watch page (app.css), Close over it and Download under it */
+.tl-modal {
+  position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.6);
+  padding:calc(env(safe-area-inset-top) + 12px) calc(env(safe-area-inset-right) + 12px) calc(env(safe-area-inset-bottom) + 12px) calc(env(safe-area-inset-left) + 12px);
+}
+.tl-modal[hidden] { display:none; }
+body.modal-open { overflow:hidden; }
+.tl-modal-box { width:100%; max-width:960px; max-height:100%; overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:2px; }
+.tl-modal-head { display:flex; align-items:center; justify-content:space-between; min-height:44px; padding-left:12px; border-bottom:1px solid var(--line); }
+.tl-modal-time { font:12px var(--mono); color:var(--muted); font-variant-numeric:tabular-nums; }
+.tl-modal-x { width:44px; height:44px; padding:0; border:none; background:none; color:var(--text); cursor:pointer; display:flex; align-items:center; justify-content:center; }
+.tl-modal-body { background:#000; }
+.tl-modal-body .vwrap { background:var(--panel); }
+/* место под ролик до его загрузки — в пропорции прошлого ролика камеры, чтобы окно не прыгало */
+.tl-modal-ph { width:100%; max-height:calc(100vh - 190px); max-height:calc(100dvh - 190px); }
+/* до метаданных постер (кадр второго потока, бывает другой пропорции) растянут в пропорцию ролика */
+.tl-modal-body video.pre { object-fit:fill; }
+.tl-modal-body video { display:block; width:100%; max-height:calc(100vh - 190px); max-height:calc(100dvh - 190px); object-fit:contain; background:#000; }
+.tl-modal-body .mscale { margin:0 12px; }
+.tl-modal-err { margin:0; padding:24px 12px; color:#fff; font:12px var(--mono); text-align:center; }
+.tl-modal-dl { display:flex; align-items:center; justify-content:center; min-height:44px; border-top:1px solid var(--line); color:var(--text); font:12px var(--mono); text-transform:uppercase; text-decoration:underline; }
 .tl-marks { position:absolute; left:0; right:0; top:0; bottom:0; pointer-events:none; }
 .tl-tick { position:absolute; top:15px; width:1px; height:5px; margin-left:-0.5px; background:var(--btn); }
 .tl-tick.day { height:10px; background:var(--muted); }
@@ -306,7 +329,7 @@ body.embed .empty { color:rgba(255,255,255,0.7); padding:24px 16px; }
   /* timelapse: the speed in one row above the picture, the player up to 960 px, centered, and low enough for the controls to fit on a short screen */
   .tl { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; max-width:min(960px, calc((100vh - 350px) * 16 / 9)); min-width:480px; margin:0 auto; }
   .tl-speed { grid-row:1; grid-column:1 / -1; justify-self:end; margin:0 0 12px; }
-  .tl-stage, .tl-controls, .tl-keys { grid-column:1 / -1; }
+  .tl-stage, .tl-note, .tl-controls, .tl-keys { grid-column:1 / -1; }
   .tl-top { top:10px; right:12px; }
   .tl-bottom { bottom:10px; left:12px; }
   .tl-time, .tl-motion { font-size:13px; }
@@ -327,7 +350,7 @@ body.embed .empty { color:rgba(255,255,255,0.7); padding:24px 16px; }
   .pager .pill:not(.disabled):hover { opacity:0.7; }
   .card { transition:filter 0.15s; }
   .card:not(.pending):not(.failed):hover { filter:brightness(1.12); }
-  .appbtn:hover, .bell:hover, .tl-play:hover, .tl-calnav:hover { opacity:0.7; }
+  .appbtn:hover, .bell:hover, .tl-play:hover, .tl-calnav:hover, .tl-modal-x:hover { opacity:0.7; }
   .tl-day:not(.sel):not([aria-disabled="true"]):hover { background:var(--fill); }
   .tl-strip:hover::before { background:var(--btn); }
   .empty a:hover { text-decoration:none; }

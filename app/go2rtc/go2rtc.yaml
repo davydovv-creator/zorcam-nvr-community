@@ -13,14 +13,11 @@ api:
 
 webrtc:
   listen: ":8555"  # WebRTC media to the browser (TCP and UDP); forwarded to the Pi on the router
-  # Public address for viewers from the internet (8555 is the external port forwarded on the router): go2rtc learns
-  # it via STUN (cached for 5 min); the gallery adds the address the app is opened at, and through the Zorcam cloud
-  # its TURN server relays the video. On the local network the browser picks the Pi's direct address anyway.
-  candidates:
-    - stun:8555
-  # No STUN gathering for each viewer: go2rtc answers only when it is over, and a STUN server that does not answer
-  # (a VPN route on the router, a blocked address) held every Live start for 5 s. Its random-port candidates are of
-  # no use anyway: only 8555 is forwarded, and that address is above and added by the gallery.
+  # No candidates here and no STUN gathering for each viewer: go2rtc answers only when it is over, and a STUN server that
+  # does not answer (a VPN route on the router, a blocked address) held every Live start for 5 s. The external address
+  # (the router forwards 8555 to the device) is found by the gallery itself by STUN in the background (stun.py, every
+  # 5 min) and added to every WebRTC answer, together with the address the app is opened at; through the Zorcam cloud
+  # its TURN server is the fallback. On the local network the browser picks the device's direct address anyway.
   ice_servers: []
 
 rtsp:
