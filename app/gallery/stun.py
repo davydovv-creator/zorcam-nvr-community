@@ -16,10 +16,13 @@ MAGIC = 0x2112A442
 BINDING_REQUEST, BINDING_SUCCESS = 0x0001, 0x0101
 MAPPED_ADDRESS, XOR_MAPPED_ADDRESS = 0x0001, 0x0020
 INTERVAL = 300       # как часто спрашивать
+RETRY_NONE = 30      # никто не ответил (например, сеть ещё не поднялась после загрузки)
+RETRY_FALLBACK = 60  # ответил не первый сервер: у роутера бывает VPN для части адресов, и запасной видит его выход
 TIMEOUT = 2.0        # на один сервер
 FALLBACK = [("stun.l.google.com", 19302), ("stun.cloudflare.com", 3478)]
-# STUN (coturn) облака того же стенда: если облако не привязано, адрес всё равно известен
-ENV_SERVERS = {"prod": ("turn.zorcam.ru", 3478), "stage": ("turn.stage.zorcam.ru", 3488),
+# STUN (coturn) облака того же стенда: если облако не привязано, адрес всё равно известен; у prod — имя в zorcam.com
+# (тот же coturn): устройство без облака общается только с международным доменом (решение владельца 20.10.2026)
+ENV_SERVERS = {"prod": ("stun.zorcam.com", 3478), "stage": ("turn.stage.zorcam.ru", 3488),
                "test": ("turn.test.zorcam.ru", 3498)}
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
 TURN_RE = re.compile(r"(turns?):([a-z0-9.-]+)(?::(\d{1,5}))?")
@@ -184,14 +187,28 @@ def probe(log=lambda m: None, ask=None):
     return ip
 
 
+def next_delay():
+    """Пауза до следующего опроса по последнему результату."""
+    with _lock:
+        ip, server = _state["ip"], _state["server"]
+    if not ip:
+        return RETRY_NONE
+    first = servers()[:1]
+    if first and server != f"{first[0][0]}:{first[0][1]}":
+        return RETRY_FALLBACK
+    return INTERVAL
+
+
 def loop(log=lambda m: None):
-    """Фоновый поток: опрос сразу и потом раз в INTERVAL; ошибки не роняют поток."""
+    """Фоновый поток: опрос сразу и потом раз в INTERVAL (чаще, пока нет ответа первого сервера); ошибки не роняют поток."""
     while True:
         try:
             probe(log)
+            delay = next_delay()
         except Exception as e:
             log(f"stun: check failed: {e}")
-        time.sleep(INTERVAL)
+            delay = INTERVAL
+        time.sleep(delay)
 
 
 def external():

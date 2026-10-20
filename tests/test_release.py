@@ -211,3 +211,33 @@ def test_interface_texts_do_not_name_the_board():
         texts.append((path, code))
     bad = [k for k, v in texts if word.search(v)]
     assert not bad, bad
+
+
+def test_install_no_start_mode_starts_nothing():
+    """ZORCAM_NO_START=1 (building an image in a chroot): install.sh only enables the units. Every command that needs a
+    running systemd (daemon-reload, start/restart/is-active, enable --now), the firewall and the checks of the running services
+    must sit in rename_old (an old installation does not exist in an image), in the else branch of the NO_START test, or after
+    the early exit of the NO_START mode."""
+    with open(os.path.join(REPO, "app", "install.sh"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    def index(prefix):
+        return next(i for i, line in enumerate(lines) if line.startswith(prefix))
+
+    old_start, old_end = index("rename_old() {"), index("}")
+    if_no_start = index('if [ "$NO_START" = 1 ]; then  # enable')
+    else_no_start = next(i for i in range(if_no_start, len(lines)) if lines[i] == "else")
+    end_no_start = next(i for i in range(else_no_start, len(lines)) if lines[i] == "fi")
+    early_exit = next(i for i in range(end_no_start, len(lines)) if lines[i] == "    exit 0")
+    assert any(line.startswith('if [ "$NO_START" = 1 ]') for line in lines[early_exit - 6:early_exit]), \
+        "the early exit must be in the NO_START test"
+    assert 'if [ "$NO_START" = 0 ] && command -v ufw' in "\n".join(lines), "the firewall is not touched in an image"
+    needs_systemd = re.compile(r"systemctl\s+(daemon-reload|restart|start|is-active)|--now|\bsleep\b|restart_if\s")
+    for i, line in enumerate(lines):
+        code = line.split("#", 1)[0]
+        if not needs_systemd.search(code) or code.lstrip().startswith(("restart_if()", "log", "echo")):
+            continue
+        ok = old_start <= i <= old_end or else_no_start < i < end_no_start or i > early_exit
+        assert ok, f"install.sh line {i + 1} starts something outside the NO_START guard: {line.strip()}"
+    # the early exit comes before the check of the services and the guards stay
+    assert early_exit < index("step \"Verification\"")

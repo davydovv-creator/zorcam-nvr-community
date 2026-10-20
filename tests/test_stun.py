@@ -76,7 +76,7 @@ def ice(*urls):
     return [{"urls": list(urls), "username": "u", "credential": "c"}]
 
 
-PROD = ("turn.zorcam.ru", 3478)
+PROD = ("stun.zorcam.com", 3478)
 GOOGLE, CLOUDFLARE = ("stun.l.google.com", 19302), ("stun.cloudflare.com", 3478)
 
 
@@ -106,7 +106,7 @@ def test_servers_from_cloud_json(clean, monkeypatch):
     assert stun.servers() == [("stun.cloud.example", 3479), PROD, GOOGLE, CLOUDFLARE]
     stun.note_cloud_ice(ice("turn:stun.cloud.example:3479", "turn:turn.example.org:3480"))
     assert stun.servers() == [("stun.cloud.example", 3479), ("turn.example.org", 3480), PROD, GOOGLE, CLOUDFLARE]
-    cloud["stun"] = "turn.zorcam.ru:3478"  # the same as the stand's: once
+    cloud["stun"] = "stun.zorcam.com:3478"  # the same as the stand's: once
     assert stun.servers() == [PROD, ("stun.cloud.example", 3479), ("turn.example.org", 3480), GOOGLE, CLOUDFLARE]
     for bad in ("junk", "host:0", "host:70000", "host", 5, None, "Host:3478"):
         cloud["stun"] = bad
@@ -132,7 +132,7 @@ def test_probe_goes_through_the_servers_until_an_answer(clean):
 
     stun.note_cloud_ice(ice("turn:turn.example.org:3478"))
     assert stun.probe(lines.append, ask) == "93.184.216.34"
-    assert asked == ["turn.example.org", "turn.zorcam.ru", "stun.l.google.com", "stun.cloudflare.com"]
+    assert asked == ["turn.example.org", "stun.zorcam.com", "stun.l.google.com", "stun.cloudflare.com"]
     assert stun.external() == ("93.184.216.34", "stun.cloudflare.com:3478")
     stun.probe(lines.append, ask)
     assert len(lines) == 1 and "93.184.216.34" in lines[0]  # unchanged: not logged again
@@ -167,6 +167,22 @@ def test_probe_without_any_answer_and_with_cgnat(clean):
     assert stun.external() == (None, None) and stun.snapshot()["checked"]
     assert stun.probe(lines.append, lambda h, p: "100.64.1.2") is None
     assert "not a public address" in lines[-1] and "100.64.1.2" in lines[-1] and stun.snapshot()["why"] == "100.64.1.2"
+
+
+def test_next_delay(clean):
+    def only(name):
+        def ask(host, port):
+            if host == name:
+                return "93.184.216.34"
+            raise TimeoutError
+        return ask
+
+    stun.probe(ask=only("nobody"))
+    assert stun.next_delay() == stun.RETRY_NONE  # no answer: soon again
+    stun.probe(ask=only("stun.cloudflare.com"))
+    assert stun.next_delay() == stun.RETRY_FALLBACK  # a fallback may see a router VPN exit: ask the first one soon
+    stun.probe(ask=only("stun.zorcam.com"))
+    assert stun.next_delay() == stun.INTERVAL
 
 
 def test_query_with_a_local_server():

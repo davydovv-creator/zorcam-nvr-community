@@ -5,12 +5,17 @@
 # recordings to /var/lib/zorcam-nvr (config/, recordings/).
 # Safe to re-run: only changed files are copied, only affected services are restarted.
 # Settings, users and cameras are set afterwards in the browser: the setup wizard opens on the first visit.
+# ZORCAM_NO_START=1: for building a system image (chroot, systemd is not running; may run as root): installs and enables
+# everything but starts nothing (no daemon-reload, restart, is-active, no waiting for the services); nothing unique to a
+# device is made (the internal token, the VAPID key, sessions are made by the services when they first run).
 set -euo pipefail
 
 GO2RTC_VERSION="${GO2RTC_VERSION:-1.9.14}"  # tested version; can be overridden
 GO2RTC_BIN=/usr/local/bin/go2rtc
 FRP_VERSION="${FRP_VERSION:-0.61.1}"  # frpc: the tunnel to the Zorcam cloud (used only when connected in Settings)
 FRPC_BIN=/usr/local/bin/frpc
+NO_START="${ZORCAM_NO_START:-0}"
+case "$NO_START" in 0|1) ;; *) echo "ZORCAM_NO_START must be 0 or 1, not $NO_START" >&2; exit 1 ;; esac
 SVC_USER=zorcam-nvr
 PREFIX=/opt/zorcam-nvr
 STATE=/var/lib/zorcam-nvr
@@ -29,7 +34,7 @@ WARNINGS=0
 
 # ---------------------------------------------------------------- checks
 step "Environment"
-[ "$(id -u)" != 0 ] || die "run as a regular user with sudo (e.g. admin), not as root"
+[ "$(id -u)" != 0 ] || [ "$NO_START" = 1 ] || die "run as a regular user with sudo (e.g. admin), not as root"
 [ -f "$SRC/gallery/app.py" ] && [ -f "$SRC/go2rtc/go2rtc.yaml" ] || die "the script must be in the app folder of the repository"
 # sudo -v asks for a password unless every sudoers rule of the user is NOPASSWD (verifypw=all): admin is also in
 # the sudo group, so first a plain command, which NOPASSWD lets through (install over SSH by the deploy agent, no terminal)
@@ -89,7 +94,7 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     ok "created the system user $SVC_USER"
 fi
 # the installing user reads the recordings (du, scp) through the group; the settings stay private (700)
-if ! id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$SVC_USER"; then
+if [ "$(id -u)" != 0 ] && ! id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$SVC_USER"; then
     sudo usermod -aG "$SVC_USER" "$(id -un)"
     ok "$(id -un) added to the group $SVC_USER (reading the recordings; works from the next login)"
 fi
@@ -319,28 +324,34 @@ sudo_copy "$SRC/go2rtc/zorcam-nvr-go2rtc-config.service" "$UNIT_DIR/zorcam-nvr-g
 for unit in zorcam-nvr-storage.service zorcam-nvr-storage.timer zorcam-nvr-storage.path; do
     sudo_copy "$SRC/storage/$unit" "$UNIT_DIR/$unit" && UNITS_CHANGED=1 || true
 done
-[ "$UNITS_CHANGED" = 1 ] && sudo systemctl daemon-reload
-sudo systemctl enable -q zorcam-nvr-capture zorcam-nvr-gallery zorcam-nvr-go2rtc zorcam-nvr-cloud
-sudo systemctl enable -q --now zorcam-nvr-go2rtc-config.path
-sudo systemctl enable -q zorcam-nvr-storage.service
-sudo systemctl enable -q --now zorcam-nvr-storage.timer zorcam-nvr-storage.path
+if [ "$NO_START" = 1 ]; then  # enable only links the units: works in a chroot, offline
+    sudo systemctl enable -q zorcam-nvr-capture zorcam-nvr-gallery zorcam-nvr-go2rtc zorcam-nvr-cloud \
+        zorcam-nvr-go2rtc-config.path zorcam-nvr-storage.service zorcam-nvr-storage.timer zorcam-nvr-storage.path
+    ok "services enabled, not started (ZORCAM_NO_START=1)"
+else
+    [ "$UNITS_CHANGED" = 1 ] && sudo systemctl daemon-reload
+    sudo systemctl enable -q zorcam-nvr-capture zorcam-nvr-gallery zorcam-nvr-go2rtc zorcam-nvr-cloud
+    sudo systemctl enable -q --now zorcam-nvr-go2rtc-config.path
+    sudo systemctl enable -q zorcam-nvr-storage.service
+    sudo systemctl enable -q --now zorcam-nvr-storage.timer zorcam-nvr-storage.path
 
-restart_if() {  # restart_if FLAG SERVICE
-    if [ "$1" = 1 ] || ! systemctl is-active -q "$2"; then
-        sudo systemctl restart "$2"
-        echo "  restarted $2"
-    fi
-}
-restart_if "$RESTART_GO2RTC"  zorcam-nvr-go2rtc
-restart_if "$RESTART_GALLERY" zorcam-nvr-gallery
-restart_if "$RESTART_CAPTURE" zorcam-nvr-capture
-# the cloud is optional: if its service does not start, the rest of the installation goes on
-restart_if "$RESTART_CLOUD"   zorcam-nvr-cloud || warn "zorcam-nvr-cloud did not start: journalctl -u zorcam-nvr-cloud -n 30"
-echo "$conf_hash" | sudo tee "$CONF_STAMP" >/dev/null
-ok "services enabled"
+    restart_if() {  # restart_if FLAG SERVICE
+        if [ "$1" = 1 ] || ! systemctl is-active -q "$2"; then
+            sudo systemctl restart "$2"
+            echo "  restarted $2"
+        fi
+    }
+    restart_if "$RESTART_GO2RTC"  zorcam-nvr-go2rtc
+    restart_if "$RESTART_GALLERY" zorcam-nvr-gallery
+    restart_if "$RESTART_CAPTURE" zorcam-nvr-capture
+    # the cloud is optional: if its service does not start, the rest of the installation goes on
+    restart_if "$RESTART_CLOUD"   zorcam-nvr-cloud || warn "zorcam-nvr-cloud did not start: journalctl -u zorcam-nvr-cloud -n 30"
+    echo "$conf_hash" | sudo tee "$CONF_STAMP" >/dev/null
+    ok "services enabled"
+fi
 
 # ---------------------------------------------------------------- firewall
-if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then
+if [ "$NO_START" = 0 ] && command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then
     step "Firewall (ufw)"
     sudo ufw allow 8555/tcp >/dev/null
     sudo ufw allow 8555/udp >/dev/null
@@ -351,17 +362,24 @@ fi
 # Raspberry Pi kernels boot with cgroup_disable=memory: MemoryMax in the units then does nothing, and a runaway
 # process takes the memory of the whole Pi (out of memory, SSH hangs). cgroup_enable=memory turns it on after a reboot.
 CMDLINE=/boot/firmware/cmdline.txt
-if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null && [ -f "$CMDLINE" ]; then
+# (in an image the host's controllers say nothing about the device: the line is checked on its own)
+if { [ "$NO_START" = 1 ] || ! grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null; } && [ -f "$CMDLINE" ]; then
     step "Memory limits of the services"
     if ! grep -qw "cgroup_enable=memory" "$CMDLINE"; then
         sudo cp "$CMDLINE" "$CMDLINE.bak"
         sudo sed -i '1 s/$/ cgroup_enable=memory cgroup_memory=1/' "$CMDLINE"
         ok "cgroup_enable=memory added to $CMDLINE (the old one: $CMDLINE.bak)"
     fi
-    warn "the memory limits start working after a reboot: sudo reboot"
+    [ "$NO_START" = 1 ] || warn "the memory limits start working after a reboot: sudo reboot"
 fi
 
 # ---------------------------------------------------------------- verification
+if [ "$NO_START" = 1 ]; then
+    echo
+    if [ "$WARNINGS" = 0 ]; then echo "${c_ok}Installed, not started.${c_off}"
+    else echo "${c_warn}Installed, not started, with warnings: $WARNINGS.${c_off}"; fi
+    exit 0
+fi
 step "Verification"
 sleep 2
 for svc in zorcam-nvr-go2rtc zorcam-nvr-gallery zorcam-nvr-capture zorcam-nvr-cloud; do
