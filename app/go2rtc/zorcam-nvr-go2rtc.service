@@ -18,6 +18,21 @@ NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+# no new privileges or kernel changes, and only what the service uses: a compromised process gets less to work with.
+# Files of the service are private to the group (the recordings are read by admin through the group zorcam-nvr)
+UMask=0027
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
 WorkingDirectory=/opt/zorcam-nvr/go2rtc
 # limits: a runaway process is restarted instead of freezing the whole Pi (1 GB RAM, SSH must stay reachable)
 # percent of physical memory: on a Pi 3 (~920 MB) it is the former ~150M / ~200M, on a Pi 4/5 the limits grow by themselves

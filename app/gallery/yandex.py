@@ -5,8 +5,8 @@ Zorcam здесь — «провайдер» приватного навыка �
 (/yandex/auth, /yandex/token), API устройств (/yandex/v1.0/...) и уведомления о движении в Яндекс
 (POST dialogs.yandex.net/api/v1/skills/<skill_id>/callback/state). Видео в Яндекс не уходит.
 
-Работает только при подключённом облаке: запросы Яндекса приходят на адрес Pi в облаке (https://<id>.<домен облака>)
-через его туннель; без облака адреса навыка не отвечают, а уведомления не отправляются.
+Работает только при подключённом облаке: запросы Яндекса приходят на адрес Pi в облаке (https://<id>.devices.<домен облака>)
+через его туннель; без облака и без сохранённых ключей навыка адреса не отвечают (404), а уведомления не отправляются.
 
 Настройки и выданные Яндексу токены — /var/lib/zorcam-nvr/config/yandex.json (600); токены хранятся только хешами.
 """
@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
+import episodes
 import zorcam_config
 
 STATE_FILE = os.path.join(zorcam_config.CONFIG_DIR, "yandex.json")
@@ -31,7 +32,7 @@ CLIENT_ID = "zorcam"  # «Идентификатор приложения» в �
 REDIRECT_HOSTS = ("social.yandex.net",)
 CODE_TTL = 600
 ACCESS_TTL = 30 * 86400  # Яндекс сам обновляет токен по refresh_token
-HOLD = 60  # «движение» держится, пока детектор не молчит HOLD секунд; потом — «нет движения»
+HOLD = episodes.HOLD  # «движение» держится, пока детектор не молчит HOLD секунд; потом — «нет движения»
 EVENTS = ("detected", "not_detected")
 
 
@@ -56,8 +57,7 @@ class Yandex:
         self.lock = threading.Lock()
         self.data = self._load()
         self.codes = {}  # хеш кода -> {"exp", "redirect_uri", "user"}; только в памяти: живут 10 минут
-        self.last_motion = {}  # камера -> время последнего сигнала детектора
-        self.active = set()  # камеры, о которых Яндексу сказано «движение»
+        self.episodes = episodes.Episodes(HOLD)  # active — камеры, о которых Яндексу сказано «движение»
         self.outbox = queue.Queue(maxsize=100)
         self.last_result = ""
 
@@ -102,6 +102,11 @@ class Yandex:
             if skill_token.strip():
                 self.data["skill_token"] = skill_token.strip()
             self._save()
+
+    def configured(self):
+        """Сохранены ключи навыка: пока их нет, адреса для Яндекса не отвечают."""
+        with self.lock:
+            return bool(self.data.get("skill_id") and self.data.get("client_secret"))
 
     def ready(self):
         """Связан с Яндексом и есть чем слать уведомления."""
@@ -172,9 +177,17 @@ class Yandex:
         """Пользователь отвязал навык в «Доме с Алисой» (или admin — на странице): все токены — в мусор."""
         with self.lock:
             self.data["tokens"] = {}
-            self.active.clear()
-            self.last_motion.clear()
+            self.episodes.clear()
             self._save()
+
+    # состояние эпизодов (тесты и страница смотрят их здесь)
+    @property
+    def active(self):
+        return self.episodes.active
+
+    @property
+    def last_motion(self):
+        return self.episodes.last_motion
 
     # ------------------------------------------------------------ устройства
     def user_id(self):
@@ -190,7 +203,7 @@ class Yandex:
         } for c in cams]}
 
     def state(self, cam_id):
-        return "detected" if cam_id in self.active else "not_detected"
+        return "detected" if self.episodes.is_active(cam_id) else "not_detected"
 
     def query(self, cams, ids):
         known = {c["id"] for c in cams}
@@ -204,20 +217,11 @@ class Yandex:
         if not self.enabled():
             return
         now = now or time.time()
-        ready = self.ready()
-        with self.lock:  # active меняют потоки запросов и фоновый поток
-            self.last_motion[cam_id] = now
-            if cam_id in self.active or not ready:
-                return
-            self.active.add(cam_id)
-        self._enqueue(cam_id, "detected")
+        if self.episodes.signal(cam_id, now, start=self.ready()):
+            self._enqueue(cam_id, "detected")
 
     def tick(self, now=None):
-        now = now or time.time()
-        with self.lock:
-            quiet = [c for c in self.active if now - self.last_motion.get(c, 0) >= HOLD]
-            self.active.difference_update(quiet)
-        for cam_id in quiet:
+        for cam_id in self.episodes.tick(now):
             self._enqueue(cam_id, "not_detected")
 
     def _enqueue(self, cam_id, value):

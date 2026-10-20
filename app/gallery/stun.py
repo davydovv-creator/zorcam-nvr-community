@@ -10,18 +10,25 @@ import struct
 import threading
 import time
 
+import zorcam_cloud
+
 MAGIC = 0x2112A442
 BINDING_REQUEST, BINDING_SUCCESS = 0x0001, 0x0101
 MAPPED_ADDRESS, XOR_MAPPED_ADDRESS = 0x0001, 0x0020
 INTERVAL = 300       # как часто спрашивать
 TIMEOUT = 2.0        # на один сервер
-FALLBACK = [("stun.cloudflare.com", 3478), ("stun.l.google.com", 19302)]
+FALLBACK = [("stun.l.google.com", 19302), ("stun.cloudflare.com", 3478)]
+# STUN (coturn) облака того же стенда: если облако не привязано, адрес всё равно известен
+ENV_SERVERS = {"prod": ("turn.zorcam.ru", 3478), "stage": ("turn.stage.zorcam.ru", 3488),
+               "test": ("turn.test.zorcam.ru", 3498)}
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
 TURN_RE = re.compile(r"(turns?):([a-z0-9.-]+)(?::(\d{1,5}))?")
 
 _lock = threading.Lock()
 _state = {"ip": None, "at": None, "server": None, "checked": None, "why": None, "logged": None}
 _cloud_hosts = []  # [(хост, порт)] из TURN-адресов облака
+_environment = "prod"
+_custom = []  # [(хост, порт)] из [live] stun_servers: если задан, заменяет весь список
 
 
 def request_packet():
@@ -97,11 +104,48 @@ def note_cloud_ice(servers):
             _cloud_hosts[:] = found
 
 
+def parse_servers(text):
+    """[(хост, порт)] из строки «хост[:порт], …» (формат проверен в zorcam_config.PATTERNS); порт по умолчанию 3478."""
+    out = []
+    for item in text.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        host, _, port = item.partition(":")
+        pair = (host, int(port) if port else 3478)
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+def configure(environment, custom=""):
+    """Галерея при старте: стенд и [live] stun_servers."""
+    global _environment
+    _environment = environment
+    _custom[:] = parse_servers(custom)
+
+
+def cloud_json_server():
+    """STUN из cloud.json (поле stun, «хост:порт»); читается при каждом опросе, чтобы пережить перезапуск галереи."""
+    value = zorcam_cloud.load().get("stun")
+    if isinstance(value, str) and zorcam_cloud.STUN_RE.fullmatch(value):
+        host, _, port = value.partition(":")
+        return [(host, int(port))]
+    return []
+
+
 def servers():
-    """Серверы по очереди: STUN облака (если оно известно), затем запасные."""
+    """Серверы по очереди: свои из параметра (только они); иначе cloud.json и ICE облака, стенд, запасные."""
+    if _custom:
+        return list(_custom)
     with _lock:
-        out = list(_cloud_hosts)
-    return out + [s for s in FALLBACK if s not in out]
+        known = list(_cloud_hosts)
+    out = []
+    env = [ENV_SERVERS[_environment]] if _environment in ENV_SERVERS else []
+    for s in cloud_json_server() + known + env + FALLBACK:
+        if s not in out:
+            out.append(s)
+    return out
 
 
 def probe(log=lambda m: None, ask=None):

@@ -16,6 +16,21 @@ NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+# no new privileges or kernel changes, and only what the service uses: a compromised process gets less to work with.
+# Files of the service are private to the group (the recordings are read by admin through the group zorcam-nvr)
+UMask=0027
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
 WorkingDirectory=/opt/zorcam-nvr/cloud
 # frpc and this loop: small; the Pi's video services keep their memory
 MemoryHigh=60M

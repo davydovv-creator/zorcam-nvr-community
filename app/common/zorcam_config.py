@@ -10,13 +10,17 @@ Cameras are added in the setup wizard and on the Settings page of the gallery.
     python3 zorcam_config.py --rtsp-source ID   # RTSP URL of camera ID with the password, for go2rtc (echo:)
     python3 zorcam_config.py --go2rtc-streams FILE  # go2rtc streams, one per camera, see zorcam-nvr-go2rtc.service
     python3 zorcam_config.py --camera-ids [--enabled]   # camera IDs, one per line (install.sh); --enabled: switched on
+    sudo -u zorcam-nvr python3 zorcam_config.py --preset language.language=ru [--preset SECTION.KEY=VALUE ...]
+                                            # set parameters the owner has not set (the installer of a build on top of the core)
 """
 import base64
 import configparser
+import contextlib
 import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
@@ -54,20 +58,20 @@ PARAMS = [
      "If WebRTC does not connect within this many seconds, the player switches to HLS", "gallery"),
     ("live", "hls_idle_timeout", 30, int,
      "The HLS stream stops when the player has not requested it for this many seconds", "gallery"),
+    ("live", "stun_servers", "", str,
+     "STUN servers (comma separated host[:port], port 3478 by default) that tell the device its external address for Live "
+     "from the internet. If set, only these are asked. Empty: the paired cloud, the cloud of this stand, then "
+     "stun.l.google.com and stun.cloudflare.com", "gallery"),
 
     ("notifications", "motion_cooldown", 60, int,
      "At most one motion notification per this many seconds", "gallery"),
-    ("notifications", "health", True, bool,
-     "Push notifications about failures and recovery", "gallery"),
-    ("notifications", "health_repeat_minutes", 60, int,
-     "Remind about an unresolved failure every this many minutes (0: no reminders)", "gallery"),
 
     ("health", "check_interval", 60, int,
      "Check the system state every this many seconds", "gallery"),
     ("health", "no_frames_seconds", 120, int,
      "Failure when the camera sends no frames for longer than this, s", "gallery"),
     ("health", "min_free_disk_mb", 1024, int,
-     "Below this much free disk space, MB, the oldest recordings are removed (a push to admins)", "gallery"),
+     "Below this much free disk space, MB, the oldest recordings are removed", "gallery"),
     ("health", "max_cpu_temp", 80, int,
      "Failure when the CPU temperature is above this, °C", "gallery"),
 
@@ -78,6 +82,10 @@ PARAMS = [
     ("gallery", "environment", "prod", str,
      "Which stand this device is: prod, stage or test. Non-prod stands show a TEST / STAGE badge in the app and "
      "default to the cloud of the same stand (cloud.stage.zorcam.ru, cloud.test.zorcam.ru)", "gallery"),
+    ("gallery", "trusted_proxies", "", str,
+     "IP addresses (comma separated) of reverse proxies in front of the gallery, e.g. 127.0.0.1 for nginx on this device. "
+     "For a connection from one of them the client address in the sign-in limits is the last entry of X-Forwarded-For. "
+     "Empty: the address of the connection itself", "gallery"),
 ]
 
 # parameters with a fixed set of values (a drop-down list on /config)
@@ -87,12 +95,18 @@ CHOICES = {
     ("gallery", "environment"): ("prod", "stage", "test"),
 }
 # parameters with a format check: (regex, message key)
+_STUN_HOST = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
+_STUN_PORT = r"(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?"
+_STUN_ITEM = _STUN_HOST + _STUN_PORT
 PATTERNS = {
+    ("live", "stun_servers"): (rf"^({_STUN_ITEM}(\s*,\s*{_STUN_ITEM})*)?$", "cfg.stun_list"),
+    ("gallery", "trusted_proxies"): (r"^([0-9A-Fa-f:.]+(\s*,\s*[0-9A-Fa-f:.]+)*)?$", "cfg.ip_list"),
 }
 # obsolete keys: silently skipped when reading the file
 DEPRECATED = {("capture", "clip_seconds"), ("capture", "frame_interval"), ("storage", "frames_minutes"),
               ("storage", "videos_days"),  # now per camera
               ("gallery", "max_grid"), ("gallery", "horizons"),  # the Timelapse tab is only the timelapse now
+              ("notifications", "health"), ("notifications", "health_repeat_minutes"),  # no failure push any more
               ("live", "public_ip")}  # the address comes by itself: STUN, the address the app is opened at, TURN of the cloud
 SECTIONS = ("language", "capture", "live", "notifications", "health", "gallery")
 
@@ -201,7 +215,7 @@ def example(values=None):
             section = s
             lines += ["", f"[{s}]"]
         value = (values or {}).get((s, k), default)
-        line = f"{k} = {format_value(value)}" if value != default else f"# {k} = {format_value(default)}"
+        line = (f"{k} = {format_value(value)}" if value != default else f"# {k} = {format_value(default)}").rstrip()
         lines += [f"# {part}" for part in f"{desc} ({who})".split("\n")] + [line]
     return "\n".join(lines) + "\n"
 
@@ -582,6 +596,39 @@ def _atomic_write(path, text, mode):
     os.replace(tmp, path)
 
 
+INTERNAL_TOKEN_FILE = os.path.join(CONFIG_DIR, "internal_token")
+
+
+def internal_token(create=False, path=None):
+    """Общий секрет детектора и галереи для /internal/motion (один пользователь, файл 600): без него любой локальный
+    процесс мог бы слать «движение». create=True (галерея при старте) создаёт файл, если его нет; None — файла нет."""
+    path = path or INTERNAL_TOKEN_FILE
+    for _ in range(2):
+        try:
+            with open(path, encoding="ascii") as f:
+                token = f.read().strip()
+            if token:
+                return token
+        except (OSError, ValueError):
+            pass
+        if not create:
+            return None
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.unlink(path)  # пустой или нечитаемый файл — не секрет
+        tmp = f"{path}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(32) + "\n")
+        try:
+            os.link(tmp, path)  # атомарно и без перезаписи: чужой файл, появившийся раньше, остаётся
+        except FileExistsError:
+            pass
+        finally:
+            os.unlink(tmp)
+    return None
+
+
 def save_config(values, path=CONFIG_FILE):
     """zorcam.conf: a description for every parameter; values other than the default as active lines."""
     _atomic_write(path, example(values), 0o644)
@@ -594,6 +641,76 @@ def validate(section, key, raw):
         return _parse(raw, typ, CHOICES.get((section, key)), PATTERNS.get((section, key))), None
     except ValueError as e:
         return None, _error(e)
+
+
+def _put_line(lines, section, key, value):
+    """The line `key = value` in the [section] of the file's lines: in place of the commented default (# key = …) or,
+    when there is none, at the end of the section; a section that is not there yet is added at the end."""
+    start = next((i for i, line in enumerate(lines) if line.startswith(f"[{section}]")), None)
+    if start is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines + (["", f"[{section}]"] if lines else [f"[{section}]"]) + [f"{key} = {value}", ""]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    commented = re.compile(rf"\s*[#;]\s*{re.escape(key)}\s*=")
+    for i in range(start + 1, end):
+        if commented.match(lines[i]):
+            lines[i] = f"{key} = {value}"
+            return lines
+    while end - 1 > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[:end] + [f"{key} = {value}"] + lines[end:]
+
+
+def apply_presets(items, path=CONFIG_FILE):
+    """Parameters proposed by the installer of a build on top of the core (items: "section.key=value"), set only where the
+    owner has not set them: a line of the parameter in zorcam.conf, even one equal to the default, is the owner's and stays.
+    Returns what happened, a line per parameter ("preset …" / "kept …"). ValueError (English text) for a wrong item, and
+    then nothing is written. The file is edited line by line, so its comments stay; one that would not change is not
+    written at all (every write of zorcam.conf restarts go2rtc and the detector)."""
+    types = {(s, k): (t, d) for s, k, d, t, *_ in PARAMS}
+    wanted = {}
+    for item in items:
+        name, eq, raw = item.partition("=")
+        section, dot, key = name.strip().partition(".")
+        if not eq or not dot or (section, key) not in types:
+            raise ValueError(f"{item!r}: expected SECTION.KEY=VALUE of a parameter of zorcam.conf")
+        if (section, key) in wanted:
+            raise ValueError(f"{section}.{key} is given twice")
+        try:
+            wanted[section, key] = _parse(raw, types[section, key][0], CHOICES.get((section, key)), PATTERNS.get((section, key)))
+        except ValueError as e:
+            raise ValueError(f"{section}.{key} = {raw.strip()}: {_error(e).text('en')}") from None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = example()
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cannot read {path}: {e}") from None
+    owner = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        owner.read_string(text)
+    except configparser.Error as e:
+        raise ValueError(f"cannot read {path}: {e}") from None
+    lines, report, put = text.split("\n"), [], {}
+    for (section, key), value in wanted.items():
+        if owner.has_option(section, key):
+            report.append(f"kept {section}.{key} = {owner.get(section, key).strip()} (set by the owner)")
+            continue
+        report.append(f"preset {section}.{key} = {format_value(value)}")
+        if value != types[section, key][1]:  # the default needs no line
+            lines = _put_line(lines, section, key, format_value(value))
+            put[section, key] = value
+    if put:
+        text = "\n".join(lines)
+        check = configparser.ConfigParser(interpolation=None, strict=False)  # the file must read back as intended
+        check.read_string(text)
+        for (section, key), value in put.items():
+            if not check.has_option(section, key) or _parse(check.get(section, key), types[section, key][0]) != value:
+                raise ValueError(f"cannot place {section}.{key} in {path}")
+        _atomic_write(path, text if text.endswith("\n") else text + "\n", 0o644)
+    return report
 
 
 def signature(paths=None):
@@ -622,6 +739,102 @@ def edition(path=None):
     except OSError:
         return "community"
     return value if value in EDITIONS else "community"
+
+
+# the look of a build made on top of the core (gallery/brand.py): a folder next to the program that the build's own installer
+# fills; none — the core looks as it always did. ZORCAM_BRAND_DIR is for tests and for trying a folder out
+BRAND_DIR = os.environ.get("ZORCAM_BRAND_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "brand")
+DEVICE_FILE = os.path.join(CONFIG_DIR, "device.json")  # {"serial": "…"}: written by the installer of a build, read-only here
+MAX_SERIAL = 32
+
+
+def device_serial(path=None):
+    """The serial number of the device from device.json, or "" (no file, not JSON, no printable serial)."""
+    try:
+        with open(path or DEVICE_FILE, encoding="utf-8") as f:
+            serial = json.load(f).get("serial")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    serial = serial.strip() if isinstance(serial, str) else ""
+    return serial if serial and len(serial) <= MAX_SERIAL and serial.isprintable() else ""
+
+
+RTF_UP, RTF_REJECT = 0x1, 0x200  # флаги маршрута в /proc/net/route и /proc/net/ipv6_route
+
+
+def _read_text(path, limit=65536):
+    """Маленький файл из /proc или /sys; нет файла или он не читается — пустая строка."""
+    try:
+        with open(path, errors="replace") as f:
+            return f.read(limit)
+    except OSError:
+        return ""
+
+
+def _listdir(path):
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
+def _default_route_iface(proc_dir):
+    """Интерфейс маршрута по умолчанию: IPv4 (/proc/net/route), иначе IPv6; при нескольких — с меньшей метрикой.
+    Маску проверяем: «разделённый» default VPN (0.0.0.0/1 и 128.0.0.0/1) не вытесняет проводной маршрут."""
+    found = []
+    for line in _read_text(os.path.join(proc_dir, "net", "route")).splitlines()[1:]:
+        f = line.split()  # Iface Destination Gateway Flags RefCnt Use Metric Mask …: всё шестнадцатеричное, кроме Metric
+        try:
+            if len(f) >= 8 and f[1] == f[7] == "0" * 8 and int(f[3], 16) & RTF_UP:
+                found.append((int(f[6]), f[0]))
+        except ValueError:
+            continue
+    if not found:
+        for line in _read_text(os.path.join(proc_dir, "net", "ipv6_route")).splitlines():
+            f = line.split()  # dest plen src plen nexthop metric refcnt use flags iface — всё шестнадцатеричное
+            try:
+                if len(f) >= 10 and f[0] == "0" * 32 and f[1] == "00" \
+                        and int(f[8], 16) & RTF_UP and not int(f[8], 16) & RTF_REJECT:
+                    found.append((int(f[5], 16), f[9]))
+            except ValueError:
+                continue
+    return min(found, key=lambda route: route[0])[1] if found else None
+
+
+def _iface_kind(iface, sys_dir):
+    """"wifi" — беспроводной интерфейс, "ethernet" — физический проводной (у него есть device), None — виртуальный
+    (VPN, мост, tun) или чужое имя."""
+    if not re.fullmatch(r"[\w.@:-]+", iface or "") or iface in (".", ".."):
+        return None
+    base = os.path.join(sys_dir, "class", "net", iface)
+    if os.path.isdir(os.path.join(base, "wireless")) or os.path.exists(os.path.join(base, "phy80211")):
+        return "wifi"
+    return "ethernet" if os.path.exists(os.path.join(base, "device")) else None
+
+
+def _rfkill_blocked(sys_dir, kind):
+    """Все rfkill-выключатели этого типа ("wlan", "bluetooth") заблокированы (soft или hard); выключателей нет — нет."""
+    base = os.path.join(sys_dir, "class", "rfkill")
+    blocked = []
+    for name in _listdir(base):
+        if name.startswith("rfkill") and _read_text(os.path.join(base, name, "type")).strip() == kind:
+            blocked.append(any(_read_text(os.path.join(base, name, flag)).strip() == "1" for flag in ("soft", "hard")))
+    return bool(blocked) and all(blocked)
+
+
+def network_state(proc_dir="/proc", sys_dir="/sys"):
+    """Как устройство подключено к сети и включены ли Wi-Fi и Bluetooth: {"via": "ethernet" | "wifi" | None,
+    "wifi": bool, "bluetooth": bool}. via — по маршруту по умолчанию (None: маршрута нет или интерфейс виртуальный);
+    wifi, bluetooth — есть ли радиомодуль, который не выключен ни прошивкой (dtoverlay=disable-wifi / disable-bt:
+    интерфейса нет), ни rfkill. Для совета в «Состоянии» и часового отчёта облаку: только чтение маленьких файлов, без
+    процессов и root; что не прочиталось — «не определено» (None, радио выключено), не исключение. Без имени сети,
+    адресов и названий интерфейсов."""
+    via = _iface_kind(_default_route_iface(proc_dir), sys_dir)
+    wifi = any(_iface_kind(name, sys_dir) == "wifi" for name in _listdir(os.path.join(sys_dir, "class", "net")))
+    # hci0 есть, пока ядро видит адаптер; у соединений в этой папке свои записи («hci0:256») — шаблон их отсекает
+    bluetooth = any(re.fullmatch(r"hci\d+", name) for name in _listdir(os.path.join(sys_dir, "class", "bluetooth")))
+    return {"via": via, "wifi": wifi and not _rfkill_blocked(sys_dir, "wlan"),
+            "bluetooth": bluetooth and not _rfkill_blocked(sys_dir, "bluetooth")}
 
 
 def sd_notify(message):
@@ -657,6 +870,15 @@ if __name__ == "__main__":
         sys.exit(0)
     if "--camera-ids" in sys.argv:
         print("\n".join(c["id"] for c in load_cameras() if "--enabled" not in sys.argv or c.get("enabled", True)))
+        sys.exit(0)
+    if "--preset" in sys.argv:  # --preset SECTION.KEY=VALUE, any number of times
+        items = [a for flag, a in zip(sys.argv, sys.argv[1:], strict=False) if flag == "--preset"]
+        if len(items) != sys.argv.count("--preset"):
+            sys.exit("error: --preset needs SECTION.KEY=VALUE")
+        try:
+            print("\n".join(apply_presets(items)))
+        except ValueError as e:
+            sys.exit(f"error: {e}")
         sys.exit(0)
     cfg = load()
     print(f"File: {cfg.path}" + ("" if cfg.exists else " (missing: all values are defaults)"))

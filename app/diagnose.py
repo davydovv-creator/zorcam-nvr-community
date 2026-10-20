@@ -56,6 +56,8 @@ SERVICE_PATTERNS = {
     "stun": r"stun: external address",  # the gallery logs it only when the result changes: the last line is the state
 }
 CGROUP = "/sys/fs/cgroup/system.slice/{}.service/memory.events"
+CGROUP_STAT = "/sys/fs/cgroup/system.slice/{}.service/memory.stat"
+GALLERY_ANON_WARN_MB = 120  # MemoryHigh of the gallery is 200 MB: the process itself rarely needs half of it
 
 
 def line_time(line):
@@ -92,12 +94,13 @@ def live_sources(days):
         "persistent": os.path.isdir("/var/log/journal"),
         "disk": shutil.disk_usage(STATE_DIR if os.path.isdir(STATE_DIR) else "/"),
         "memory_events": {s: memory_events(CGROUP.format(s)) for s in SERVICES},
+        "memory_stat": {"zorcam-nvr-gallery": memory_events(CGROUP_STAT.format("zorcam-nvr-gallery"))},
         "origin": f"this Pi, last {days} days",
     }
 
 
 def memory_events(path):
-    """memory.events of a service's cgroup as {name: count} (since the service started), {} if not readable."""
+    """memory.events (or memory.stat) of a service's cgroup as {name: count}, {} if not readable."""
     try:
         with open(path) as f:
             return {k: int(v) for k, v in (line.split() for line in f if line.strip())}
@@ -265,6 +268,21 @@ def analyze(src):
     else:
         out.append((OK, "Memory", "no out-of-memory events" + (
             f"; at least {mon['mem_min']} MB available" if mon["mem_min"] is not None else ""), [], ""))
+
+    # the gallery at its MemoryHigh: the page cache of the clips and frames it sends counts there too, and the kernel
+    # drops it at the limit — harmless; only the process's own memory (anon) near the limit is a problem
+    ghigh = src.get("memory_events", {}).get("zorcam-nvr-gallery", {}).get("high", 0)
+    gstat = src.get("memory_stat", {}).get("zorcam-nvr-gallery", {})
+    if ghigh and "anon" in gstat:
+        anon, cache = gstat["anon"] // 2**20, gstat.get("file", 0) // 2**20
+        if anon >= GALLERY_ANON_WARN_MB:
+            out.append((WARN, "Gallery memory", f"the gallery process holds {anon} MB (anon) and reached its memory "
+                        f"limit {ghigh} times since it started", [],
+                        "The gallery itself grows: restart it (sudo systemctl restart zorcam-nvr-gallery) and "
+                        "report it with debug.sh save."))
+        else:
+            out.append((OK, "Gallery memory", f"reached its limit {ghigh} times on the file cache of clips and "
+                        f"frames (normal); the process itself holds {anon} MB, cache {cache} MB", [], ""))
 
     # services
     restarts = Counter()

@@ -31,7 +31,22 @@ function placeBox(host, media) {
 // a clip with metadata (the watch page and the window over the timelapse; root is where its player is): the frame and the
 // Motion badge are on while currentTime >= the motion time (the frame is also on the poster before playback starts); the
 // mark on the scale under the video is the motion time, a tap seeks to it
+// The system controls of a clip (iOS keeps them for seconds and has no setting for that): while it plays they go away
+// a second after the last touch, a tap on the video brings them back; paused, they stay, so that there is something to press
+var CONTROLS_HIDE_MS = 1000;
+function autoHideControls(video) {
+  var timer = 0;
+  function later() {
+    clearTimeout(timer);
+    timer = setTimeout(function() { if (!video.paused) video.controls = false; }, CONTROLS_HIDE_MS);
+  }
+  function show() { video.controls = true; later(); }
+  ['touchstart', 'mousemove', 'click'].forEach(function(ev) { video.addEventListener(ev, show, { passive: true }); });
+  ['playing', 'seeking', 'volumechange'].forEach(function(ev) { video.addEventListener(ev, later); });
+  video.addEventListener('pause', function() { clearTimeout(timer); video.controls = true; });
+}
 function initMotionClip(root) {
+  root.querySelectorAll('video[controls]').forEach(autoHideControls);
   var frame = root.querySelector('.vframe');
   if (!frame) return;
   var video = frame.querySelector('video'), mbox = frame.querySelector('.mbox'), badge = frame.querySelector('.mbadge');
@@ -41,7 +56,7 @@ function initMotionClip(root) {
   var started = false;
   function update() {
     var on = at !== null && video.currentTime >= at;
-    if (mbox) mbox.classList.toggle('on', on || !started);
+    if (mbox) mbox.classList.toggle('on', on || (!started && !!video.getAttribute('poster')));  // before the start - over the poster
     if (badge) badge.classList.toggle('on', on);
     if (prog && video.duration) prog.style.width = Math.min(100, video.currentTime / video.duration * 100) + '%';
   }
@@ -118,36 +133,69 @@ function initMotionClip(root) {
     setTimeout(function() { location.reload(); }, 150);
   });
 })();
-// The mode icon in the header (device or cloud): a tap or hover shows what the page is viewed through. A second tap, a tap
-// elsewhere or a few seconds close the hint.
+// The mode icon in the header (device or cloud): a tap or hover shows what the page is viewed through, and on the device
+// a link to the cloud. A tap closes the hint again on a second tap, a tap elsewhere or after a few seconds; a hover keeps
+// it while the pointer is on the icon or on the hint, so its link can be reached.
 (function() {
-  var tip = null, timer = 0;
+  var shown = null, timer = 0, leave = 0;
   function hide() {
     clearTimeout(timer);
-    if (tip && tip.parentNode) tip.parentNode.removeChild(tip);
-    tip = null;
+    clearTimeout(leave);
+    if (shown) shown.hidden = true;
+    shown = null;
   }
-  function show(btn) {
+  function show(btn, auto) {
     hide();
-    tip = document.createElement('div');
-    tip.className = 'modetip';
-    tip.setAttribute('role', 'tooltip');
-    tip.textContent = btn.getAttribute('aria-label');  // the hint text is the button's own label (en or ru)
-    btn.parentNode.appendChild(tip);
-    timer = setTimeout(hide, 5000);
+    shown = btn.parentNode.querySelector('.modetip');
+    shown.hidden = false;
+    if (auto) timer = setTimeout(hide, 5000);
+  }
+  function zone(e) {
+    return e.target && e.target.closest ? e.target.closest('.modebtn, .modetip') : null;
   }
   document.addEventListener('click', function(e) {
+    if (e.target.closest && e.target.closest('.modetip')) return;  // the link in the hint goes on
     var btn = e.target.closest && e.target.closest('.modebtn');
     if (!btn) return hide();
-    if (tip && tip.parentNode === btn.parentNode) hide(); else show(btn);
+    if (shown && shown.parentNode === btn.parentNode) hide(); else show(btn, true);
   });
   if (window.matchMedia && matchMedia('(hover: hover)').matches) {
     document.addEventListener('mouseover', function(e) {
-      var btn = e.target.closest && e.target.closest('.modebtn');
-      if (btn && !(tip && tip.parentNode === btn.parentNode)) show(btn);
+      var el = zone(e);
+      if (!el) return;
+      clearTimeout(leave);
+      if (el.classList.contains('modebtn') && (!shown || shown.parentNode !== el.parentNode)) show(el, false);
     });
     document.addEventListener('mouseout', function(e) {
-      if (e.target.closest && e.target.closest('.modebtn')) hide();
+      var from = zone(e), to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.modebtn, .modetip') : null;
+      if (from && !to) leave = setTimeout(hide, 300);
     });
   }
+})();
+// The on-screen keyboard (iPhone): while a field has focus the tab bar is hidden, otherwise iOS lifts it above the keyboard,
+// and after the keyboard closes leaves it in the middle of the screen until the next scroll. A scroll to the same place
+// on blur makes iOS put the fixed elements back.
+(function() {
+  if (!window.matchMedia || !matchMedia('(pointer: coarse)').matches) return;
+  var root = document.documentElement, timer = 0;
+  function typing(el) {
+    if (!el || el.disabled || el.readOnly) return false;
+    if (el.tagName === 'TEXTAREA' || el.isContentEditable) return true;
+    if (el.tagName !== 'INPUT') return false;
+    return !/^(checkbox|radio|button|submit|reset|range|color|file|image|hidden)$/.test(el.type);
+  }
+  document.addEventListener('focusin', function(e) {
+    if (!typing(e.target) || window.innerWidth >= 1024) return;
+    clearTimeout(timer);
+    root.classList.add('kbd');
+  });
+  document.addEventListener('focusout', function() {
+    clearTimeout(timer);
+    // the focus moving to the next field is not a keyboard close
+    timer = setTimeout(function() {
+      if (typing(document.activeElement)) return;
+      root.classList.remove('kbd');
+      window.scrollTo(window.scrollX, window.scrollY);
+    }, 100);
+  });
 })();

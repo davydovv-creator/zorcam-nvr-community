@@ -3,6 +3,7 @@ import os
 import posixpath
 import collections
 import base64
+import calendar
 import gzip
 import hashlib
 import heapq
@@ -32,14 +33,21 @@ import zorcam_config  # noqa: E402
 import zorcam_users  # noqa: E402
 import onvif  # noqa: E402
 import zorcam_cloud  # noqa: E402
+import brand  # noqa: E402
 import zorcam_storage  # noqa: E402
 import yandex  # noqa: E402
+import mqtt  # noqa: E402
 import stun  # noqa: E402
 import zorcam_i18n as i18n  # noqa: E402
 from zorcam_i18n import Msg, Raw, t  # noqa: E402
 from zorcam_html import cat, esc, h, js_json, trusted  # noqa: E402
 
 CFG = zorcam_config.load()
+try:  # секрет детектора для /internal/motion; нет прав на папку настроек — движение не принимается, остальное работает
+    INTERNAL_TOKEN = zorcam_config.internal_token(create=True)
+except OSError as e:
+    INTERNAL_TOKEN = None
+    print(f"internal token unavailable, motion signals are refused: {e}", flush=True)
 
 try:
     import push as webpush  # push.py рядом с app.py; нужен python3-cryptography
@@ -49,7 +57,7 @@ except ImportError as e:
 
 DEBUG = os.environ.get("ZORCAM_DEBUG") == "1"  # app/debug.sh on
 CHILD_ENV = {k: v for k, v in os.environ.items() if k != "NOTIFY_SOCKET"}  # иначе systemctl шлёт свой статус в наш сокет
-VERSION = "0.5.0"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
+VERSION = "0.5.1"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
 
 
 def installed_build():
@@ -63,6 +71,9 @@ def installed_build():
 
 BASE_DIR = zorcam_config.DATA_DIR  # /var/lib/zorcam-nvr/recordings; кадры и ролики камеры — в <id> и <id>_videos
 PORT = 80
+TUNNEL_PORT = zorcam_cloud.TUNNEL_PORT  # второй порт, только 127.0.0.1: туда приходит туннель облака (frpc), см. Handler.on_tunnel
+MAX_CONNECTIONS = 96  # одновременно обрабатываемых соединений на порт; сверх — сразу закрываем (каждое — поток)
+HOST_IPS_MAX = 64  # записей в кеше DNS адресов, по которым открыта галерея (Host приходит от клиента)
 ENVIRONMENT = CFG.get("gallery", "environment")  # prod, stage или test: стенд этого устройства
 VIDEOS_PER_PAGE = CFG.get("gallery", "videos_per_page")
 TABS = ["live", "records"]  # вкладки нижней панели; «Записи» — переключатель двух панелей RECORD_TABS
@@ -73,10 +84,10 @@ DEFAULT_TAB = "live"
 LIVE_DIR = "/dev/shm/zorcam_live"  # HLS камеры — в <id>/, в оперативной памяти, чтобы не изнашивать SD-карту
 LIVE_IDLE_TIMEOUT = CFG.get("live", "hls_idle_timeout")  # сек без запросов плеера — ffmpeg останавливается
 WEBRTC_FALLBACK = CFG.get("live", "webrtc_fallback_seconds")
+stun.configure(ENVIRONMENT, CFG.get("live", "stun_servers"))
 GO2RTC_WEBRTC_URL = "http://127.0.0.1:1984/api/webrtc?src="  # + ID камеры; API go2rtc слушает только localhost
 MAX_SDP_SIZE = 65536
-HLS_JS_VERSION = "1.7.3"  # hls.js с jsDelivr: точная версия и её хеш (SRI) — sha384 файла dist/hls.min.js
-HLS_JS_SRI = "sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX"
+HLS_JS_FILE = "hls.min.js"  # hls.js 1.7.3 (Apache-2.0, текст — static/hls.LICENSE.txt) лежит в static/ как есть, без CDN
 WEBRTC_PORT = 8555  # webrtc.listen в go2rtc.yaml; этот же порт проброшен на роутере
 
 ROLE_LEVEL = {"liveviewer": 0, "viewer": 1, "admin": 2}  # liveviewer — только Live, без записей и push
@@ -91,10 +102,11 @@ THUMB_PRUNE_INTERVAL = 600  # сек: удаление превью, чьи ис
 # сек: удаление записей старше сроков камер; сроки — в днях, а проверка возраста — это stat каждого файла
 # (десятки тысяч снимков), так что не при каждой проверке состояния
 CLEANUP_INTERVAL = 600
+# папка записей -> (файлов, байт, когда посчитано); пишет Health.cleanup() раз в CLEANUP_INTERVAL, читает «Настройки»
+RECORDINGS_STATS = {}
 # места меньше min_free_disk_mb: удалить самые старые записи, чтобы стало min_free_disk_mb + столько — с запасом,
-# а не понемногу на каждой проверке; push об этом администраторам — при включении режима, потом не чаще раза в сутки
+# а не понемногу на каждой проверке
 FREE_MARGIN_MB = 512
-DISK_CLEANUP_PUSH_HOURS = 24
 LANG_SETTING = CFG.get("language", "language")  # auto — язык устройства (Accept-Language), иначе en или ru
 PUSH_COOLDOWN = CFG.get("notifications", "motion_cooldown")  # сек: не чаще одного уведомления о движении
 HEALTH_URL = "http://127.0.0.1:%d/healthz"
@@ -104,6 +116,7 @@ CAPTURE_MEMORY_EVENTS = "/sys/fs/cgroup/system.slice/zorcam-nvr-capture.service/
 MEMORY_HIGH_LIMIT = 100  # столько торможений за одну проверку — уже проблема
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+# адрес значка -> файл в static/; значок из папки brand/ надстройки (brand.py) заменяет одноимённый: ICON_FILES, см. apply_brand
 STATIC_FILES = {
     "/apple-touch-icon.png": "apple-touch-icon.png",
     "/apple-touch-icon-precomposed.png": "apple-touch-icon.png",  # iOS ищет и эти адреса, если ссылка не сработала
@@ -118,26 +131,21 @@ def icon_url(path):
     """Адрес значка с хешем содержимого: Safari хранит значок домашнего экрана по адресу и, несмотря на no-cache,
     при новом добавлении берёт старый — новый рисунок должен прийти по новому адресу."""
     try:
-        with open(os.path.join(STATIC_DIR, STATIC_FILES[path]), "rb") as f:
+        with open(ICON_FILES[path], "rb") as f:
             return f"{path}?v={hashlib.sha256(f.read()).hexdigest()[:12]}"
     except OSError:
         return path
-
-
-ICON_URLS = {p: icon_url(p) for p in STATIC_FILES}
 
 
 def icon_data_url(path):
     """Значок «На экран Домой» прямо в странице: через прокси роутера (KeenDNS и т.п.) iPhone не мог скачать его
     отдельным запросом (тот идёт без входа на прокси) и рисовал букву «Z»; data: качать не нужно."""
     try:
-        with open(os.path.join(STATIC_DIR, STATIC_FILES[path]), "rb") as f:
+        with open(ICON_FILES[path], "rb") as f:
             return "data:image/png;base64," + base64.b64encode(f.read()).decode()
     except OSError:
         return ICON_URLS[path]
 
-
-TOUCH_ICON_DATA = icon_data_url("/apple-touch-icon.png")
 
 SETUP_COOKIE = "zorcam_setup"  # CSRF мастера первичной настройки, пока нет ни одного пользователя
 
@@ -145,8 +153,38 @@ _sessions_lock = threading.Lock()
 SESSIONS = {}
 _failed_lock = threading.Lock()
 FAILED_ATTEMPTS = {}
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 30  # неудачных входов с одного адреса за ATTEMPT_WINDOW: защита от перебора по многим именам
 ATTEMPT_WINDOW = 300
+# вход под одним именем закрывается растущей паузой: после USER_LOCK_AFTER неудач подряд — на минуту, каждая следующая
+# неудача удваивает паузу до 15 минут; верный вход сбрасывает счёт. Имя считается как набрано (без учёта регистра),
+# существует ли оно — не важно: ответ не выдаёт, есть ли такой пользователь
+USER_LOCK_AFTER = 5
+USER_LOCK_FIRST = 60
+USER_LOCK_MAX = 900
+USER_FAILS_IDLE = 3600  # сек без неудач после конца паузы — счёт забывается
+USER_FAILS_MAX = 2000  # записей в памяти; имена придумывает тот, кто перебирает
+USER_FAILS = {}  # имя (casefold) -> [неудач подряд, закрыто до, время последней неудачи]
+# Адреса навыка Яндекса открыты из интернета: поверх лимита по IP — общий лимит неудач на всё устройство
+# (адреса, с которых перебирают, можно менять)
+YANDEX_MAX_FAILURES = 20
+YANDEX_FAILURE_WINDOW = 3600
+YANDEX_FAILURES = []
+
+
+def yandex_locked_out():
+    now = time.time()
+    with _failed_lock:
+        YANDEX_FAILURES[:] = [t for t in YANDEX_FAILURES if now - t < YANDEX_FAILURE_WINDOW]
+        return len(YANDEX_FAILURES) >= YANDEX_MAX_FAILURES
+
+
+def yandex_register_failed():
+    """Неудача на /yandex/auth или /yandex/token; True — это последняя разрешённая, дальше до конца окна отказ."""
+    now = time.time()
+    with _failed_lock:
+        YANDEX_FAILURES[:] = [t for t in YANDEX_FAILURES if now - t < YANDEX_FAILURE_WINDOW]
+        YANDEX_FAILURES.append(now)
+        return len(YANDEX_FAILURES) == YANDEX_MAX_FAILURES
 
 
 def is_locked_out(ip):
@@ -165,6 +203,61 @@ def register_failed(ip):
             for old in [a for a, times in FAILED_ATTEMPTS.items() if now - times[-1] >= ATTEMPT_WINDOW]:
                 del FAILED_ATTEMPTS[old]
         FAILED_ATTEMPTS.setdefault(ip, []).append(now)
+
+
+def login_key(name):
+    return (name or "").strip().casefold()[:64]
+
+
+def user_locked_out(name):
+    """Сколько секунд вход под этим именем ещё закрыт (0 — открыт)."""
+    now = time.time()
+    with _failed_lock:
+        entry = USER_FAILS.get(login_key(name))
+        return max(0, int(entry[1] - now) + 1) if entry and entry[1] > now else 0
+
+
+def register_user_failed(name):
+    """Неудачный вход под именем. Возвращает паузу (сек), на которую вход закрыт, или 0."""
+    now = time.time()
+    key = login_key(name)
+    with _failed_lock:
+        entry = USER_FAILS.get(key)
+        if entry is None or now - max(entry[1], entry[2]) > USER_FAILS_IDLE:
+            entry = [0, 0.0, now]
+        entry[0] += 1
+        entry[2] = now
+        pause = 0
+        if entry[0] >= USER_LOCK_AFTER:
+            pause = min(USER_LOCK_MAX, USER_LOCK_FIRST * 2 ** min(entry[0] - USER_LOCK_AFTER, 10))
+            entry[1] = now + pause
+        USER_FAILS.pop(key, None)
+        USER_FAILS[key] = entry  # порядок словаря — по последней неудаче
+        if len(USER_FAILS) > USER_FAILS_MAX:  # забыть сначала тех, чья пауза и запас времени прошли, потом самых давних
+            for old in [k for k, v in USER_FAILS.items() if v[1] <= now and now - v[2] > USER_FAILS_IDLE]:
+                del USER_FAILS[old]
+            while len(USER_FAILS) > USER_FAILS_MAX:
+                del USER_FAILS[next(iter(USER_FAILS))]
+        return pause
+
+
+def clear_user_failed(name):
+    with _failed_lock:
+        USER_FAILS.pop(login_key(name), None)
+
+
+def parse_proxies(raw):
+    """Адреса из trusted_proxies: IP через запятую; непонятное пропускается."""
+    out = set()
+    for part in (raw or "").split(","):
+        try:
+            out.add(str(ipaddress.ip_address(part.strip())))
+        except ValueError:
+            pass
+    return out
+
+
+TRUSTED_PROXIES = parse_proxies(CFG.get("gallery", "trusted_proxies"))
 
 
 def _token_key(token):
@@ -242,7 +335,9 @@ def check_session(token):
 
 
 def end_sessions(user, keep=None):
-    """Завершить все сессии пользователя, кроме keep (токен того, кто меняет свой же пароль)."""
+    """Завершить все сессии пользователя, кроме keep (токен того, кто меняет свой же пароль или выходит на других
+    устройствах). Возвращает, сколько сессий завершено. Общая облачная сессия пользователя (_cloud_sessions) остаётся,
+    только если это keep: в ней сидят все его клиенты облака, отличить их нельзя."""
     keep_key = _token_key(keep) if keep else None
     with _sessions_lock:
         gone = [k for k, v in SESSIONS.items() if v["user"] == user and k != keep_key]
@@ -250,6 +345,11 @@ def end_sessions(user, keep=None):
             del SESSIONS[k]
         if gone:
             _save_sessions()
+    with _cloud_sessions_lock:
+        shared = _cloud_sessions.get(user)
+        if shared and _token_key(shared) != keep_key:
+            del _cloud_sessions[user]
+    return len(gone)
 
 
 def is_valid_session(token):
@@ -304,11 +404,6 @@ def deliver_cloud_event(cam_id, cam_name, name, viewers, sleep=time.sleep):
 def cloud_event_loop():
     while True:
         deliver_cloud_event(*_cloud_events.get())
-
-
-def alert_users():
-    """Кому слать push о неисправностях: admin."""
-    return {u for u, v in zorcam_users.load().items() if v["role"] == "admin"}
 
 
 def setup_needed():
@@ -618,6 +713,8 @@ def timelapse_reply(cam_id, period, gzipped=False, day=None):
             reply = {"camera": cam_id, "period": None if day else period, "base": f"/thumb/{raw_dir}/",
                      "full": f"/img/{raw_dir}/", "tz": {"abbr": tz["abbr"], "offset": tz["offset"], "label": tz["label"]},
                      "frames": timelapse_frames(cam_id, period, day=day),
+                     # время Pi «как UTC» (как в именах кадров): до него плеер доводит конец шкалы сегодняшнего дня
+                     "now": int(calendar.timegm(time.localtime())),
                      "videos": timelapse_videos(cam_id, period, day=day), "clip": (camera(cam_id) or {}).get("clip_seconds") or 10}
             if day:
                 reply["day"] = day.isoformat()
@@ -752,21 +849,8 @@ SOUND_ICON = ('<svg viewBox="0 0 24 24" width="18" height="18" fill="none" strok
               '<path class="mute" d="M16 9l6 6M22 9l-6 6"/></svg>')
 PLAY_ICON = '<svg viewBox="0 0 24 24" width="30" height="30"><rect x="1" y="1" width="22" height="22" fill="rgba(0,0,0,0.6)"/><path d="M10 8l6 4-6 4z" fill="#fff"/></svg>'
 
-APP_NAME = "Zorcam" if ENVIRONMENT == "prod" else f"Zorcam {ENVIRONMENT}"  # заголовок вкладки и подпись под иконкой
 # значок стенда рядом с названием: у prod его нет; на обоих языках один и тот же
 ENV_BADGE = "" if ENVIRONMENT == "prod" else h("span", ENVIRONMENT.upper(), class_="envbadge")
-
-# «На экран Домой» на iPhone открывает галерею как отдельное приложение, без панелей Safari.
-# В Android и обычном браузере эти теги ничего не меняют (Chrome только предложит установить).
-APP_HEAD = f"""<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="{esc(APP_NAME)}">
-<meta name="theme-color" content="#f3f3f1">
-<link rel="apple-touch-icon" sizes="180x180" href="{TOUCH_ICON_DATA}">
-<link rel="icon" type="image/png" sizes="192x192" href="{ICON_URLS['/icon-192.png']}">
-<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
-"""
 
 _MARK_RE = re.compile(r"\[\[([\w.]+)\]\]")
 _localized = {}
@@ -781,20 +865,6 @@ def localize(template, lang):
             lambda m: lang if m.group(1) == "lang" else t(lang, m.group(1)).replace("$", "$$"), template)
     return _localized[key]
 
-
-MANIFEST = json.dumps({
-    "name": "Zorcam",
-    "short_name": "Zorcam",
-    "start_url": "/?tab=live",
-    "scope": "/",
-    "display": "standalone",
-    "background_color": "#f3f3f1",
-    "theme_color": "#f3f3f1",
-    "icons": [
-        {"src": ICON_URLS["/icon-192.png"], "sizes": "192x192", "type": "image/png"},
-        {"src": ICON_URLS["/icon-512.png"], "sizes": "512x512", "type": "image/png"},
-    ],
-}, ensure_ascii=False).encode()
 
 # Service worker: показывает push-уведомления, по нажатию открывает Live.
 SW_JS = """self.addEventListener('install', function() { self.skipWaiting(); });
@@ -883,15 +953,71 @@ def load_templates():
 ASSETS = load_assets()
 TEMPLATES = load_templates()
 _T_KEY_RE = re.compile(r"""\bT\[['"]([\w.]+)['"]\]""")
-JS_KEYS = {name: sorted(set(_T_KEY_RE.findall(body.decode()))) for name, (body, _, _) in ASSETS.items() if name.endswith(".js")}
-# подстановки во всех шаблонах: css_app — адрес /static/app.css?v=<хеш>, js_main — /static/main.js?v=<хеш>
+# чужой файл (hls.js) не разбираем: ключей T[...] в нём нет, а читать 600 КБ минифицированного кода незачем
+JS_KEYS = {name: sorted(set(_T_KEY_RE.findall(body.decode()))) for name, (body, _, _) in ASSETS.items()
+           if name.endswith(".js") and name != HLS_JS_FILE}
+# подстановки во всех шаблонах: css_app — адрес /static/app.css?v=<хеш>, js_main — /static/main.js?v=<хеш>;
+# то, что зависит от папки brand/ (app_head, app_name, touch_icon, theme_css, login_logo), ставит apply_brand
 TEMPLATE_VARS = {
-    "app_head": trusted(APP_HEAD), "app_name": esc(APP_NAME), "version": VERSION, "env_badge": ENV_BADGE,
+    "version": VERSION, "env_badge": ENV_BADGE,
     "back_icon": trusted(BACK_ICON), "apple_icon": trusted(APPLE_ICON), "share_icon": trusted(SHARE_ICON),
-    "touch_icon": esc(ICON_URLS["/apple-touch-icon.png"]),
     "ptr": trusted(TEMPLATES["ptr"]),
-    **{f"{name.rsplit('.', 1)[1]}_{name.rsplit('.', 1)[0]}": f"/static/{name}?v={version}" for name, (_, _, version) in ASSETS.items()},
+    **{f"{name.rsplit('.', 1)[1]}_{name.rsplit('.', 1)[0]}": f"/static/{name}?v={version}" for name, (_, _, version) in ASSETS.items() if name != HLS_JS_FILE},
 }
+
+
+def apply_brand(folder):
+    """Всё, что <head> страниц, манифест, значки и шапка берут из папки brand/ надстройки (brand.Brand): имя приложения,
+    цвет, значки, theme.css (последним <link> каждой страницы), знак. Папки нет — то, что было всегда. Вызывается при
+    запуске; тест подставляет свою папку."""
+    global BRAND, APP_NAME, APP_HEAD, MANIFEST, ICON_FILES, ICON_URLS, TOUCH_ICON_DATA
+    BRAND = folder if isinstance(folder, brand.Brand) else brand.Brand(folder, log=lambda msg: print(msg, flush=True))
+    base = BRAND.app_name or "Zorcam"
+    APP_NAME = base if ENVIRONMENT == "prod" else f"{base} {ENVIRONMENT}"  # заголовок вкладки и подпись под иконкой
+    color = BRAND.theme_color or "#f3f3f1"
+    # тёмный цвет сборки — тёмная строка состояния iPhone в режиме приложения (default там всегда светлая)
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    bar = "black" if 0.299 * r + 0.587 * g + 0.114 * b < 128 else "default"
+    ICON_FILES = {path: BRAND.icons.get(name) or os.path.join(STATIC_DIR, name) for path, name in STATIC_FILES.items()}
+    ICON_URLS = {path: icon_url(path) for path in STATIC_FILES}
+    TOUCH_ICON_DATA = icon_data_url("/apple-touch-icon.png")
+    # «На экран Домой» на iPhone открывает галерею как отдельное приложение, без панелей Safari.
+    # В Android и обычном браузере эти теги ничего не меняют (Chrome только предложит установить).
+    APP_HEAD = f"""<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="{bar}">
+<meta name="apple-mobile-web-app-title" content="{esc(APP_NAME)}">
+<meta name="theme-color" content="{esc(color)}">
+<link rel="apple-touch-icon" sizes="180x180" href="{TOUCH_ICON_DATA}">
+<link rel="icon" type="image/png" sizes="192x192" href="{ICON_URLS['/icon-192.png']}">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+"""
+    MANIFEST = json.dumps({
+        "name": base,
+        "short_name": base,
+        "start_url": "/?tab=live",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": color,
+        "theme_color": color,
+        "icons": [
+            {"src": ICON_URLS["/icon-192.png"], "sizes": "192x192", "type": "image/png"},
+            {"src": ICON_URLS["/icon-512.png"], "sizes": "512x512", "type": "image/png"},
+        ],
+    }, ensure_ascii=False).encode()
+    TEMPLATE_VARS.update(
+        app_head=trusted(APP_HEAD), app_name=esc(APP_NAME), touch_icon=esc(ICON_URLS["/apple-touch-icon.png"]),
+        # theme.css — последним <link> страницы, перед </head>; знак — над формой входа
+        theme_css=cat(h("link", rel="stylesheet", href=BRAND.url("theme.css")), "\n") if BRAND.url("theme.css") else "",
+        login_logo=logo_html("loginlogo"))
+
+
+def logo_html(cls):
+    """Знак надстройки (brand/logo.svg) как картинка; файла нет — ничего."""
+    return h("img", class_=cls, src=BRAND.url("logo.svg"), alt="") if BRAND.url("logo.svg") else ""
+
+
+apply_brand(zorcam_config.BRAND_DIR)
 _templates = {}
 _texts = {}
 
@@ -920,11 +1046,19 @@ REQUEST = threading.local()
 
 def brand_html(lang, cls):
     """Название в шапке: «Zorcam.nvr» (открыто напрямую с устройства) или «Zorcam.cloud» (через облако) со значком режима
-    (по нажатию static/app.js показывает подсказку) и значком стенда, если он не prod."""
+    (по наведению или нажатию static/app.js показывает подсказку; открытое напрямую устройство, подключённое к облаку, —
+    и ссылку на облако) и значком стенда, если он не prod. Надстройка (brand/) заменяет «Zorcam.nvr» своим названием и
+    ставит свой знак перед названием в обоих режимах."""
     mode = "cloud" if getattr(REQUEST, "cloud", False) else "nvr"
-    tip = t(lang, "brand.tip_" + mode)
-    return h("div" if cls == "brand" else "span", h("span", t(lang, "brand." + mode)),
-             h("button", trusted(MODE_ICONS[mode]), type="button", class_="modebtn", data_view=mode, aria_label=tip),
+    name = (BRAND.name_for(lang) if mode == "nvr" else "") or t(lang, "brand." + mode)
+    cloud = yandex_cloud_url() if mode == "nvr" else ""  # адрес этого устройства в облаке, если подключено
+    tip = [h("span", t(lang, "brand.tip_" + mode))]
+    if cloud:
+        tip.append(h("a", t(lang, "brand.open_cloud"), href=cloud + "/"))
+    return h("div" if cls == "brand" else "span", logo_html("brandlogo"), h("span", name),
+             h("button", trusted(MODE_ICONS[mode]), type="button", class_="modebtn", data_view=mode,
+               aria_label=t(lang, "brand.tip_" + mode)),
+             h("span", *tip, class_="modetip", hidden=True, role="tooltip"),
              ENV_BADGE, class_=cls)
 
 
@@ -1031,7 +1165,13 @@ def timelapse_html(cam, lang, at=None):
     head = h("div", h("span", class_="tl-modal-time"),
              h("button", trusted(CLOSE_ICON), type="button", class_="tl-modal-x", aria_label=t(lang, "tl.clip_close")),
              class_="tl-modal-head")
-    box = h("div", head, h("div", class_="tl-modal-body"),
+    stage_clip = h("div", h("div", class_="tl-modal-body"),
+                   h("button", trusted(CHEVRON_LEFT), type="button", class_="tl-clip-arrow tl-clip-prev", hidden=True,
+                     aria_label=t(lang, "tl.clip_prev")),
+                   h("button", trusted(CHEVRON_RIGHT), type="button", class_="tl-clip-arrow tl-clip-next", hidden=True,
+                     aria_label=t(lang, "tl.clip_next")),
+                   class_="tl-modal-stage")
+    box = h("div", head, stage_clip,
             h("a", t(lang, "tl.clip_download"), href="#", class_="tl-modal-dl", download=True),
             class_="tl-modal-box", role="dialog", aria_modal="true")
     modal = h("div", box, class_="tl-modal", hidden=True)
@@ -1042,36 +1182,42 @@ def timelapse_html(cam, lang, at=None):
              class_="tl", data_cam=cam["id"], data_api=f"/timelapse/{cam['id']}", data_at=at)
 
 
-def ptz_html(c, lang, csrf):
-    """Блок поворота и зума под плеером: переключатель и свёрнутые кнопки; весь скрыт, пока JS не узнает у
-    /ptz/<камера>, что камера это умеет; без адреса ONVIF переключатель неактивен (блок показывается)."""
+def ptz_html(c, lang, csrf, opened=False):
+    """Блок поворота и зума под плеером: переключатель и кнопки крестом (зум в центре), свёрнутые, кроме Live одной
+    камеры (opened); весь скрыт, пока JS не узнает у /ptz/<камера>, что камера это умеет (и какие кнопки показать);
+    без адреса ONVIF блока нет."""
+    if not c.get("onvif_url"):
+        return ""
     buttons = cat(
-        h("button", trusted(icon), type="button", class_="ptz-btn gap" if d == "out" else "ptz-btn", data_dir=d,
+        h("button", trusted(icon), type="button", class_="ptz-btn", data_dir=d,
           aria_label=t(lang, "ptz." + d), title=t(lang, "ptz." + d)) for d, icon in PTZ_BUTTONS)
-    pad = h("div", buttons, h("span", class_="ptz-msg", role="status"), class_="ptz-pad", hidden=True)
-    no_url = not c.get("onvif_url")
-    toggle = h("button", t(lang, "ptz.toggle"), type="button", class_="ptz-toggle", aria_expanded="false",
-               disabled=no_url, title=t(lang, "ptz.no_onvif") if no_url else None)
+    pad = h("div", buttons, h("span", class_="ptz-msg", role="status"), class_="ptz-pad", hidden=not opened)
+    toggle = h("button", t(lang, "ptz.toggle"), type="button", class_="ptz-toggle", aria_expanded="true" if opened else "false")
     return h("div", toggle, pad, class_="ptz", role="group",
              aria_label=t(lang, "ptz.group"), data_cam=c["id"], data_csrf=csrf, hidden=True)
 
 
-def live_cam_html(c, lang, csrf=""):
+def live_cam_html(c, lang, csrf="", link=False, ptz_open=False):
     """Плеер Live одной камеры: название, кадр, статус (его оживляет Player в static/main.js); csrf — для
-    кнопок поворота (viewer и выше, не во встроенном плеере)."""
+    кнопок поворота (viewer и выше, не во встроенном плеере); link — название ведёт в Live только этой камеры;
+    ptz_open — кнопки поворота сразу раскрыты (Live одной камеры)."""
     audio = bool(c.get("audio"))
     wrap = h("div", h("video", muted=True, playsinline=True, controls=True),
              h("span", t(lang, "js.connecting"), class_="live-status"),
              h("button", trusted(SOUND_ICON), type="button", class_="live-sound", aria_label=t(lang, "live.sound_on"),
                title=t(lang, "live.sound_on")) if audio else "",
              class_="live-wrap", data_cam=c["id"], data_audio=audio)
-    return h("div", h("h2", c["name"], class_="camera-name"), wrap, h("div", class_="live-note"),
-             ptz_html(c, lang, csrf) if csrf else "", class_="cam")
+    name = (h("h2", h("a", h("span", c["name"]), h("span", "›", aria_hidden="true", class_="go"),
+                      href=f"/?tab=live&cam={quote(c['id'], safe='')}", aria_label=t(lang, "live.only_cam")),
+              class_="camera-name link")
+            if link else h("h2", c["name"], class_="camera-name"))
+    return h("div", name, wrap, h("div", class_="live-note"),
+             ptz_html(c, lang, csrf, ptz_open) if csrf else "", class_="cam")
 
 
 def page_data(ice=()):
     """window.PAGE главной страницы: что подставлялось в JS через .format (адрес hls.js, ICE-серверы облака, пауза до HLS)."""
-    return {"hlsUrl": f"https://cdn.jsdelivr.net/npm/hls.js@{HLS_JS_VERSION}/dist/hls.min.js", "hlsSri": HLS_JS_SRI,
+    return {"hlsUrl": f"/static/{HLS_JS_FILE}?v={ASSETS[HLS_JS_FILE][2]}",
             "webrtcFallbackMs": WEBRTC_FALLBACK * 1000, "iceServers": list(ice)}
 
 
@@ -1099,11 +1245,14 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
     raw_dir, video_dir = cam_dirs(cam["id"]) if cam else ("", "")
     videos = [] if live_only or not cam else list_videos(cam["id"], pending=True)
 
-    def cam_tabs(tab):
+    def cam_tabs(tab, items=None, first=None, active=None):
         """Подвкладки камер во «Видео» и Timelapse (переключатель): названия камер; стрелки по краям (static/main.js)
-        появляются, когда полоса не помещается и её можно прокрутить."""
-        tabs = h("div", (h("a", c["name"], class_="pill active" if c is cam else "pill", href=f"/?tab={tab}&cam={c['id']}")
-                         for c in cams), class_="horizon-pills camtabs")
+        появляются, когда полоса не помещается и её можно прокрутить. В Live items — включённые камеры, first — вкладка
+        «Все» перед ними, active — открытая камера (None — «Все»)."""
+        active = cam if items is None else active
+        tabs = h("div", first or "",
+                 (h("a", c["name"], class_="pill active" if c is active else "pill", href=f"/?tab={tab}&cam={c['id']}")
+                  for c in (cams if items is None else items)), class_="horizon-pills camtabs")
         return h("div", tabs,
                  h("button", trusted(CHEVRON_LEFT), type="button", class_="camarr prev", hidden=True,
                    aria_label=t(lang, "cam.tabs_prev")),
@@ -1147,18 +1296,27 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
     # выключенных камер в Live нет, их записи остаются в «Видео» и в Timelapse
     live_cams = [c for c in cams if c.get("enabled", True)]
     ptz_csrf = csrf if csrf and not live_only else ""  # liveviewer не управляет камерами
-    live_body = cat(live_cam_html(c, lang, ptz_csrf) for c in live_cams)
+    # ?tab=live&cam=ID — Live одной камеры (только включённая и доступная; иначе «Все»); выбор нигде не хранится
+    # (cam в «Записях» — выбор их камеры, поэтому режим одной камеры только при tab=live)
+    single = next((c for c in live_cams if c["id"] == cam_id), None) if len(live_cams) > 1 and active_tab == "live" else None
+    live_body = cat(live_cam_html(c, lang, ptz_csrf, link=len(live_cams) > 1 and not single) for c in live_cams)
     # «Переподключить»: в приложении на iPhone жест «потянуть» над видео не срабатывает (касания забирает плеер)
     reload_btn = h("button", trusted(RELOAD_ICON), type="button", class_="pill reload", id="live-reload",
                    aria_label=t(lang, "live.reload"), title=t(lang, "live.reload"))
-    if len(live_cams) > 1:
+    # при двух и более камерах над Live всегда полоса «Все» + камеры; «Все» (без cam) — сетка всех камер
+    all_tab = h("a", t(lang, "live.all_cams"), class_="pill" if single else "pill active", href="/?tab=live")
+    live_tabs = h("div", cam_tabs("live", live_cams, all_tab, single), class_="toolbar") if len(live_cams) > 1 else ""
+    if single:
+        live_body = cat(live_tabs, h("div", reload_btn, class_="horizon-pills livecols"),
+                        h("div", live_cam_html(single, lang, ptz_csrf, ptz_open=True), class_="live-single"))
+    elif len(live_cams) > 1:
         # на телефоне 1/2/3, на широком экране (от 1024 px) 2/3/4: лишнее прячет CSS (.only-narrow, .only-wide)
         cols = cat(
             h("button", trusted(COLS_ICON[n]), type="button",
               class_="pill" + (" active" if n == 1 else "") + (" only-narrow" if n == 1 else " only-wide" if n == 4 else ""),
               data_cols=n, aria_label=t(lang, "live.columns", n=n), title=t(lang, "live.columns", n=n))
             for n in (1, 2, 3, 4))
-        live_body = cat(h("div", h("div", cols, class_="seg"), reload_btn, class_="horizon-pills livecols"),
+        live_body = cat(live_tabs, h("div", h("div", cols, class_="seg"), reload_btn, class_="horizon-pills livecols"),
                         h("div", live_body, class_="live-grid", data_cols=1))
     elif live_cams:
         live_body = cat(h("div", reload_btn, class_="horizon-pills livecols"), live_body)
@@ -1170,10 +1328,10 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
             switch = h("div", (h("button", t(lang, "tab." + k), type="button", class_="pill active" if k == tab else "pill", data_go=k)
                                for k in RECORD_TABS), class_="seg recseg")
         return h("div", h("h1", head, class_="large"), switch, body, class_="panel", data_panel=tab,
-                 hidden=active_tab != tab)
+                 data_single=bool(single) if tab == "live" else None, hidden=active_tab != tab)
     panels = cat(panel("live", live_body), "" if live_only else cat(panel("videos", videos_body), panel("all", all_body)))
     bell = ("" if live_only else h("button", trusted(BELL_ICON), class_="bell", id="bell", title=t(lang, "bell"),
-                                   aria_label=t(lang, "bell")))
+                                   aria_label=t(lang, "bell"), data_csrf=csrf))
     chrome = render_template("chrome", lang, brand=brand_html(lang, "appname"), bell=bell, clock=clock_html())
     return render_template("page", lang, body_class="tabbed", chrome=chrome,
                            tabbar=tab_bar(lang, role, active_tab, switch=True, user=user), panels=panels,
@@ -1321,7 +1479,15 @@ except Exception as e:  # например, нет прав на /var/lib/zorcam
     print(f"yandex smart home disabled: {e}", flush=True)
 
 
-_host_ips = {}  # имя -> (IP, когда узнали): DNS не на каждое подключение
+try:
+    MQTT = mqtt.Mqtt(cameras=lambda: cameras(), version=VERSION, log=log)
+except Exception as e:  # например, нет прав на /var/lib/zorcam-nvr/config
+    MQTT = None
+    print(f"mqtt disabled: {e}", flush=True)
+
+
+_host_ips = {}  # имя -> (IP, когда узнали): DNS не на каждое подключение; не больше HOST_IPS_MAX (Host задаёт клиент)
+_host_ips_lock = threading.Lock()
 
 
 def host_ip(host):
@@ -1337,7 +1503,11 @@ def host_ip(host):
         ip = socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
     except (OSError, IndexError):
         ip = None
-    _host_ips[host] = (ip, time.time())
+    with _host_ips_lock:
+        _host_ips.pop(host, None)  # порядок словаря — порядок обновления: лишним уходит самая давняя запись
+        _host_ips[host] = (ip, time.time())
+        while len(_host_ips) > HOST_IPS_MAX:
+            del _host_ips[next(iter(_host_ips))]
     return ip
 
 
@@ -1524,19 +1694,18 @@ def free_disk(base, need, batch=2000):
 # ---------------------------------------------------------------- мониторинг
 
 class Health:
-    """Раз в check_interval: состояние камеры, сервисов, диска, температуры; push при проблеме и восстановлении.
+    """Раз в check_interval: состояние камеры, сервисов, диска, температуры (push о них не шлём — только «Состояние»).
     Там же — очистка старых кадров и роликов по срокам каждой камеры. Названия проверок — check.<ключ> в zorcam_i18n."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.started = time.time()
         self.checks = {}      # ключ -> (ok, Msg)
-        self.problems = {}    # ключ -> {"since", "notified"}
+        self.problems = {}    # ключ -> {"since"}
         self.events = collections.deque(maxlen=30)  # (время, Msg заголовка, Msg текста, исправлено ли)
         self.checked = None
         self.interval = max(10, CFG.get("health", "check_interval"))
         self.memory_high = None  # (счётчик high, время) прошлой проверки
-        self.disk_cleanup_at = 0.0  # последняя очистка по месту
 
     def capture_status(self, cam_id):
         try:
@@ -1606,21 +1775,8 @@ class Health:
             return True, Msg("health.memory_ok")
         return False, Msg("health.memory_short", n=n, minutes=minutes)
 
-    def notify(self, mark, key, body):
-        """mark — ⚠ или ✓; body — Msg, переводится на язык каждой подписки."""
-        if PUSH is None or not CFG.get("notifications", "health"):
-            return
-
-        def message(sub):
-            lang = push_lang(sub)
-            return {"title": f"{mark} Zorcam: {check_title(key).text(lang)}", "body": body.text(lang),
-                    "tag": f"health-{key}", "url": settings_url("status")}
-        threading.Thread(target=PUSH.send_all, args=(message, log),
-                         kwargs={"users": alert_users()}, daemon=True).start()
-
     def evaluate(self, checks):
         now = time.time()
-        repeat = CFG.get("notifications", "health_repeat_minutes") * 60
         with self.lock:
             self.checks, self.checked = checks, now
             for key in [k for k in self.problems if k not in checks]:  # удалённая камера: её проблем больше нет
@@ -1629,18 +1785,13 @@ class Health:
                 title = check_title(key)
                 prob = self.problems.get(key)
                 if not ok and prob is None:
-                    self.problems[key] = {"since": now, "notified": now}
+                    self.problems[key] = {"since": now}
                     self.events.appendleft((now, Msg("health.event_problem", title=title), text, False))
                     log(f"health: problem {key}: {text}")
-                    self.notify("⚠", key, Msg("push.problem", text=text))
-                elif not ok and repeat and now - prob["notified"] >= repeat:
-                    prob["notified"] = now
-                    self.notify("⚠", key, Msg("push.still", text=text, since=fmt_clock(prob["since"])))
                 elif ok and prob is not None:
                     del self.problems[key]
                     self.events.appendleft((now, Msg("health.event_recovered", title=title), text, True))
                     log(f"health: recovered {key}: {text}")
-                    self.notify("✓", key, Msg("push.recovered", text=text))
             self.write_summary(checks, now)
 
     def write_summary(self, checks, now):
@@ -1672,21 +1823,31 @@ class Health:
         except OSError:
             dirnames = []
         for dirname in dirnames:
-            max_age = ages.get(dirname, defaults["videos_days" if dirname.endswith("_videos") else "frames_days"] * 86400)
+            is_videos = dirname.endswith("_videos")
+            max_age = ages.get(dirname, defaults["videos_days" if is_videos else "frames_days"] * 86400)
+            count = size = 0  # что осталось после очистки: для «Настройки» → «Камеры» (RECORDINGS_STATS)
             try:
                 with os.scandir(os.path.join(BASE_DIR, dirname)) as it:
                     for e in it:
                         try:
-                            if e.is_file() and now - e.stat().st_mtime > max_age:
+                            if not e.is_file():
+                                continue
+                            st = e.stat()
+                            if now - st.st_mtime > max_age:
                                 os.remove(e.path)
+                                continue
+                            # у ролика числом считается его постер .jpg (рядом .mp4, .json, .failed), байты — всех
+                            count += e.name.endswith(".jpg") if is_videos else 1
+                            size += st.st_size
                         except OSError:
                             pass
             except FileNotFoundError:
                 pass
+            RECORDINGS_STATS[dirname] = (count, size, time.time())
 
     def free_space(self):
         """Места меньше min_free_disk_mb (сроки хранения не успевают): удалить самые старые записи всех камер.
-        Проверка «Место на диске» после этого в норме, поэтому push — свой: при включении режима."""
+        Проверка «Место на диске» после этого в норме, поэтому очистка записана в события отдельно."""
         limit = CFG.get("health", "min_free_disk_mb")
         try:
             free = shutil.disk_usage(BASE_DIR).free
@@ -1703,9 +1864,6 @@ class Health:
         now = time.time()
         with self.lock:
             self.events.appendleft((now, Msg("health.event_disk_cleanup"), text, False))
-        if now - self.disk_cleanup_at >= DISK_CLEANUP_PUSH_HOURS * 3600:
-            self.notify("⚠", "disk", text)
-        self.disk_cleanup_at = now
 
     def loop(self):
         cleaned = 0.0
@@ -1835,19 +1993,44 @@ def status_rows(lang):
         p.start()
     for p in probes:
         p.join(6)
-    rows = [row(t(lang, "st.version"), VERSION), row(t(lang, "st.edition"), t(lang, "edition." + zorcam_config.edition()))]
+    # версия надстройки (brand.json) — рядом с редакцией: «Версия» остаётся версией ядра
+    edition = " ".join(filter(None, (t(lang, "edition." + zorcam_config.edition()), BRAND.version)))
+    rows = [row(t(lang, "st.version"), VERSION), row(t(lang, "st.edition"), edition)]
+    serial = zorcam_config.device_serial()  # device.json пишет установщик надстройки; у NVR его нет
+    if serial:
+        rows.append(row(t(lang, "st.serial"), serial))
     model, ram = device_info()
     if model or ram:
-        rows.append(row(t(lang, "st.device"), ", ".join(
+        rows.append(row(t(lang, "st.device"), "\n".join(  # две строки: модель, ОЗУ под ней (.v — pre-line)
             [model] * bool(model) + [t(lang, "st.ram", size=fmt_ram(lang, ram))] * bool(ram))))
+    # только совет, янтарным: не проверка и не тревога (в «Итог» не входит); всё в порядке — строки нет
+    net = zorcam_config.network_state()
+    if net["via"] == "wifi":
+        rows.append(row(t(lang, "st.network"), t(lang, "st.network_wifi"), cls="warn",
+                        sub=t(lang, "st.network_why_wifi"), sub_cls="warn"))
+    elif net["wifi"] or net["bluetooth"]:
+        radio = "both" if net["wifi"] and net["bluetooth"] else "wifi" if net["wifi"] else "bt"
+        rows.append(row(t(lang, "st.network"), t(lang, f"st.network_radio_{radio}"), cls="warn",
+                        sub=t(lang, "st.network_why_radio"), sub_cls="warn"))
     if ENVIRONMENT != "prod":
         rows.append(row(t(lang, "st.environment"), ENVIRONMENT))
     ext = stun.snapshot()  # внешний адрес для WebRTC из интернета: не определён — янтарным, это не тревога
     if ext["checked"]:
-        rows.append(row(t(lang, "st.external"), t(lang, "st.external_ok", ip=ext["ip"], server=ext["server"]) if ext["ip"]
+        host = ext["server"].rsplit(":", 1)[0] if ext["ip"] else None  # адрес STUN без порта
+        rows.append(row(t(lang, "st.external"), t(lang, "st.external_ok", ip=ext["ip"], server=host) if ext["ip"]
                         else t(lang, "st.external_none"), cls="" if ext["ip"] else "warn",
                         sub=None if ext["ip"] else t(lang, "st.external_why_cgnat" if ext["why"] else "st.external_why"),
                         sub_cls="warn"))
+    if MQTT is not None and MQTT.enabled():  # брокер недоступен — янтарным: это не неисправность устройства
+        st = MQTT.status()
+        where = {"host": st["host"], "port": st["port"]}
+        if st["state"] == "connected":
+            rows.append(row(t(lang, "st.mqtt"), t(lang, "st.mqtt_ok", **where)))
+        elif st["error"]:
+            rows.append(row(t(lang, "st.mqtt"), t(lang, "st.mqtt_none", **where), cls="warn",
+                            sub=st["error"].text(lang), sub_cls="warn"))
+        else:
+            rows.append(row(t(lang, "st.mqtt"), t(lang, "st.mqtt_connecting", **where)))
     tz = pi_timezone()  # время записей и снимков; пояс сменили, а сервисы не перезапущены — красным
     rows.append(row(t(lang, "st.timezone"), f'{tz["name"]} ({tz["offset"]})', cls="bad" if tz["pending"] else "",
                     sub=t(lang, "st.tz_pending", zone=tz["pending"]) if tz["pending"] else None, sub_cls="bad"))
@@ -1894,8 +2077,9 @@ def status_rows(lang):
         cam_rows.append(row(t(lang, "st.reconnects"), str(len(st.get("reconnects") or []))))
         err = capture_error(st)
         if err:
-            when = f' ({fmt_clock(st["last_error_at"])})' if st.get("last_error_at") else ""
-            cam_rows.append(row(t(lang, "st.last_error"), err.text(lang) + when))
+            # длинный текст ffmpeg справа узкой колонкой не читается: подпись и время — строкой, текст — под ней во всю ширину
+            when = fmt_clock(st["last_error_at"]) if st.get("last_error_at") else ""
+            cam_rows.append((t(lang, "st.last_error"), err.text(lang), "wide", when))
     if checked:
         rows.append(row(t(lang, "st.last_check"), t(lang, "st.ago", ago=fmt_ago(time.time() - checked, lang))))
     for ts, title, text, ok in events[:10]:  # текст проблемы — красным под заголовком, исправленной — зелёным
@@ -1907,6 +2091,7 @@ def status_rows(lang):
 
 
 LIVE_URL = "/?tab=live"
+PASSWORD_URL = "/setup/password"  # «Смените пароль»: куда главная ведёт admin, пока у него пароль от установщика
 
 
 def replace_later(url, seconds):
@@ -1950,7 +2135,8 @@ def settings_page(lang, heading, back="", badge="", intro="", sections="", tabba
     return render_template("settings", lang, heading=esc(heading), backlink=backlink, badge=badge, intro=intro,
                            sections=sections, tabbar=tabbar, head_extra=head_extra, script_extra=script_extra,
                            data_script=data_script(lang, SETTINGS_SCRIPTS + ((f"{extra}.js",) if extra else ())),
-                           bodycls=' class="tabbed"' if tabbar else "" if back else ' class="plain"')
+                           bodycls=' class="tabbed"' if tabbar else "" if back else ' class="plain"',
+                           logo="" if tabbar or back else logo_html("loginlogo"))  # знак надстройки — над заголовком мастера
 
 
 def banner(cls, text):
@@ -1965,6 +2151,12 @@ def th(lang, key, **kw):
 
 def csrf_token(session_token):
     return _token_key((session_token or "") + ":csrf")[:32]
+
+
+def same_secret(given, expected):
+    """Сравнение секретов за постоянное время; compare_digest(str, str) падает на не-ASCII (ответ 500), поэтому — байты."""
+    return secrets.compare_digest(str(given or "").encode("utf-8", "surrogatepass"),
+                                  str(expected or "").encode("utf-8", "surrogatepass"))
 
 
 def choice_label(lang, section, key, value):
@@ -2072,39 +2264,25 @@ def post_button(action, fields, label, question, csrf, danger=False):
              method="POST", action=action, onsubmit=f"return confirm({json.dumps(question, ensure_ascii=False)})")
 
 
-def dir_stats(dirname, ext=""):
-    """(сколько файлов, сколько байт) в папке записей; ext — считать числом только файлы с этим окончанием
-    (у ролика это постер .jpg: рядом .mp4, .json, .failed), а байты — всех."""
-    count = size = 0
-    try:
-        with os.scandir(os.path.join(BASE_DIR, dirname)) as it:
-            for e in it:
-                if e.is_file():
-                    count += e.name.endswith(ext)
-                    size += e.stat().st_size
-    except FileNotFoundError:
-        pass
-    return count, size
-
-
 def recordings_section(lang, csrf, cams):
     """«Записи» — по камере: заголовок с именем (как в «Состоянии камер»), сколько кадров и роликов
-    и кнопки удаления с подтверждением (видно и на iPhone)."""
+    и кнопки удаления с подтверждением (видно и на iPhone). Числа берутся из RECORDINGS_STATS: папки здесь
+    не обходятся (кадров сотни тысяч, обход на Pi 3 занимает минуты и страница не открывалась)."""
     body = []
     for cam in cams:
         raw_dir, video_dir = cam_dirs(cam["id"])
-        frames_n, frames_size = dir_stats(raw_dir)
-        videos_n, videos_size = dir_stats(video_dir, ".jpg")
         name = cam["name"]
 
         def button(scope, label, question, cam=cam):
             return post_button("/storage/delete", {"cam": cam["id"], "scope": scope}, t(lang, label), question, csrf)
 
-        def cell(label, n, size):
-            return h("div", h("div", label, class_="k"), h("div", f"{n} ({fmt_bytes(size, lang)})", class_="v"), class_="rc")
+        def cell(label, dirname):
+            stats = RECORDINGS_STATS.get(dirname)
+            value = f"{stats[0]} ({fmt_bytes(stats[1], lang)})" if stats else t(lang, "rec.counting")
+            return h("div", h("div", label, class_="k"), h("div", value, class_="v"), class_="rc")
         # две колонки: Timelapse слева, Video справа; значения сверху, кнопки удаления под ними (сетка в settings.css)
         body += [h("div", h("div", name, class_="k"), class_="row all"),
-                 h("div", cell(t(lang, "tab.all"), frames_n, frames_size), cell(t(lang, "tab.videos"), videos_n, videos_size),
+                 h("div", cell(t(lang, "tab.all"), raw_dir), cell(t(lang, "tab.videos"), video_dir),
                    button("frames", "rec.delete", t(lang, "rec.confirm_frames", name=name)),
                    button("videos", "rec.delete", t(lang, "rec.confirm_videos", name=name)),
                    # общая строка на обе колонки: и снимки, и ролики
@@ -2119,6 +2297,7 @@ def delete_recordings(cam_id, scope):
         return tuple(map(sum, zip(delete_recordings(cam_id, "frames"), delete_recordings(cam_id, "videos"), strict=True)))
     raw_dir, video_dir = cam_dirs(cam_id)
     dirname = raw_dir if scope == "frames" else video_dir
+    RECORDINGS_STATS[dirname] = (0, 0, time.time())  # список камер сразу покажет нули, не дожидаясь очистки
     frames = videos = size = 0
     try:
         entries = list(os.scandir(os.path.join(BASE_DIR, dirname)))
@@ -2196,10 +2375,14 @@ def cameras_section(lang, csrf=""):
 def section_html(title, rows):
     body = []
     for label, value, vcls, *sub in rows:  # (подпись, значение, класс значения[, текст под подписью, его класс])
-        note = h("span", sub[0], class_=f"sub {sub[1]}") if sub and sub[0] else ""
         if vcls == "head":  # заголовок группы (камера) — как «Все камеры» в «Уведомлениях»
             body.append(h("div", h("div", label, class_="k"), class_="row all"))
             continue
+        if vcls == "wide":  # подпись (и время справа) — строкой, значение — под ней во всю ширину
+            body.append(h("div", h("div", h("div", label, class_="k"), h("div", sub[0] if sub else "", class_="v"), class_="wide-head"),
+                          h("div", str(value), class_="wide-text"), class_="row wide"))
+            continue
+        note = h("span", sub[0], class_=f"sub {sub[1]}") if sub and sub[0] else ""
         body.append(h("div", h("div", label, note, class_="k"), h("div", str(value), class_=f"v {vcls}"), class_="row"))
     return h("section", h("h2", title), body)
 
@@ -2279,8 +2462,11 @@ def user_section(lang, csrf, name, role, error=None):
     else:
         title, rights = name, role_select(lang, role)
         access = camera_switches(lang, zorcam_users.cameras_of(name))
-        delete = h("div", post_button("/users/delete", {"user": name}, t(lang, "users.delete"),
-                                      t(lang, "users.confirm_delete", name=name), csrf), class_="rec")
+        # «Завершить сеансы» — обычная действие-строка (красный — только удаление), «Удалить» — красным
+        delete = cat(h("div", post_button("/users/sessions", {"user": name}, t(lang, "users.end_sessions"),
+                                          t(lang, "users.end_sessions_q", name=name), csrf), class_="actions"),
+                     h("div", post_button("/users/delete", {"user": name}, t(lang, "users.delete"),
+                                          t(lang, "users.confirm_delete", name=name), csrf), class_="rec"))
     return h("section", h("h2", title),
              h("form", h("input", type="hidden", name="csrf", value=csrf), who, rights, password, access,
                h("div", h("button", t(lang, "cfgpage.save"), type="submit"), class_="actions"),
@@ -2320,7 +2506,7 @@ def users_sections(lang, csrf, error=None, raw=None):
 
 
 def render_settings(role, lang, user, csrf="", general="", tab="general", users_error=None, saved=None, users_raw=None,
-                    chosen_lang=None, added=None):
+                    chosen_lang=None, added=None, ended=None, signed_out=False):
     """«Настройки» по вкладкам: «Общие» (язык; у admin — облако и Яндекс), «Камеры» (список и записи каждой камеры),
     «Статус», «Польз.» (кто вошёл; у admin — пароль и доступ к камерам каждого пользователя; «Выйти»).
     «Камеры» и «Статус» — только admin."""
@@ -2338,6 +2524,7 @@ def render_settings(role, lang, user, csrf="", general="", tab="general", users_
             parts.append(storage_section(lang, csrf))
             parts.append(cloud_section(lang, csrf))
             parts.append(yandex_link_section(lang))
+            parts.append(mqtt_link_section(lang))
     elif tab == "notify":
         parts.append(notify_section(lang, csrf, user, role))
     elif tab == "cameras":
@@ -2355,12 +2542,18 @@ def render_settings(role, lang, user, csrf="", general="", tab="general", users_
             parts.append(section_html(t(lang, "st.cameras"), cam_rows))
     else:
         before, after = t(lang, "account.signed_in", user="\0").split("\0")  # имя — отдельным полужирным элементом
+        if signed_out:  # «Выйти на других устройствах» нажато
+            parts.append(banner("ok", t(lang, "users.signout_others_done")))
         parts.append(h("section", h("div", h("div", before, h("b", user), after, class_="k"), class_="row"),
-                       h("div", h("a", t(lang, "logout"), href="/logout"), class_="signout")))
+                       h("div", h("a", t(lang, "logout"), href="/logout"), class_="signout"),
+                       h("div", post_button("/sessions/others", {}, t(lang, "users.signout_others"),
+                                            t(lang, "users.signout_others_q"), csrf), class_="signout")))
         if admin:
             parts.append(h("div", t(lang, "users.devices"), class_="grouphead"))
             if saved:
                 parts.append(banner("ok", t(lang, "users.saved", name=saved)))
+            if ended:
+                parts.append(banner("ok", t(lang, "users.sessions_ended", name=ended)))
             parts += users_sections(lang, csrf, users_error, users_raw)
     # на широком экране список вкладок — левая колонка, содержимое вкладки (.detail) — правая; на телефоне это не видно
     return settings_page(lang, t(lang, "settings.title"), sections=cat(nav, h("div", parts, class_="detail")),
@@ -2418,6 +2611,7 @@ ONVIF_PASSWORDS = {}
 ONVIF_PASSWORD_TTL = 1800
 ONVIF_SCAN_SECONDS = 3
 ONVIF_SUBNET_COOKIE = "zorcam_onvif_subnet"
+ONVIF_SUBNET_DEFAULT = "192.168.1.0"  # подсеть в поле до первого выбора; очищенное поле запоминается пустым
 
 
 def onvif_keep_password(password):
@@ -2506,9 +2700,12 @@ def cloud_section(lang, csrf):
     head = h("h2", t(lang, "cloud.title"))
     if st == "paired":
         url = data.get("url") or ""
+        owner = data.get("owner_name")
         return h("section", head,
                  h("div", h("div", t(lang, "cloud.paired"), h("span", h("a", url, href=f"{url}/"), class_="sub"), class_="k"),
                    class_="row"),
+                 h("div", h("div", t(lang, "cloud.owner"), class_="k"), h("div", owner, class_="v"), class_="row")
+                 if isinstance(owner, str) and owner else "",
                  h("div", post_button("/cloud/disconnect", {}, t(lang, "cloud.disconnect"), t(lang, "cloud.disconnect_q"), csrf,
                                       danger=True), class_="actions"))
     if st == "pending":
@@ -2541,7 +2738,7 @@ YANDEX_TOKEN_URL = "https://oauth.yandex.ru/authorize?response_type=token&client
 
 
 def yandex_cloud_url():
-    """Адрес этого Pi в облаке Zorcam (https://<id>.<домен облака>), пока оно подключено, иначе "".
+    """Адрес этого Pi в облаке Zorcam (https://<id>.devices.<домен облака>), пока оно подключено, иначе "".
     «Умный дом Яндекса» работает только через него: запросы Яндекса приходят через туннель облака."""
     if zorcam_cloud.state() != "paired":
         return ""
@@ -2616,6 +2813,56 @@ def render_yandex_page(lang, csrf, saved=False):
     return settings_page(lang, t(lang, "ya.title"), settings_url("general"), sections=sections)
 
 
+def mqtt_link_section(lang):
+    """«Общие» у admin: строка «MQTT и Home Assistant» со ссылкой на страницу настройки."""
+    cfg = MQTT.settings() if MQTT is not None else None
+    state = t(lang, "mqtt.on", host=cfg["host"], port=cfg["port"]) if cfg and cfg["enabled"] else t(lang, "mqtt.off")
+    return h("section", h("h2", t(lang, "mqtt.title")),
+             h("div", h("div", t(lang, "mqtt.short"), h("span", state, class_="sub"), class_="k"), class_="row"),
+             h("div", h("a", t(lang, "mqtt.open"), href="/mqtt"), class_="actions"))
+
+
+def render_mqtt_page(lang, csrf, saved=False, values=None, errors=None):
+    """Настройка MQTT: брокер, логин и пароль (пароль в форму не возвращается), префикс, имя устройства, discovery.
+    values — введённое в форме после ошибки; errors — {поле: Msg}."""
+    cfg = MQTT.form_values()
+    if values:
+        cfg.update(values)
+    errors = errors or {}
+
+    def field(name, label, control, hint=None):
+        err = errors.get(name)
+        return h("div", h("div", label, h("span", hint, class_="sub") if hint else "", class_="k"), control,
+                 h("div", err.text(lang), class_="msg") if err else "",
+                 class_="row field err" if err else "row field")
+
+    def text(name, value, **kw):
+        return h("input", type="text", name=name, value=value, **{**HOST_INPUT, **kw})
+
+    form = h("form", h("input", type="hidden", name="csrf", value=csrf),
+             switch_row(t(lang, "mqtt.enabled"), "enabled", "yes", cfg["enabled"]),
+             field("host", t(lang, "mqtt.host"), text("host", cfg["host"], maxlength=253), t(lang, "mqtt.host_hint")),
+             field("port", t(lang, "mqtt.port"), text("port", cfg["port"], inputmode="numeric", maxlength=5), t(lang, "mqtt.port_hint")),
+             switch_row(t(lang, "mqtt.tls"), "tls", "yes", cfg["tls"]),
+             h("div", t(lang, "mqtt.tls_hint"), class_="tip"),
+             field("username", t(lang, "mqtt.username"), text("username", cfg["username"], maxlength=mqtt.MAX_LOGIN),
+                   t(lang, "mqtt.username_hint")),
+             field("password", t(lang, "mqtt.password"),
+                   h("input", type="password", name="password", value="", autocomplete="new-password", maxlength=mqtt.MAX_LOGIN,
+                     placeholder=t(lang, "mqtt.keep") if cfg["has_password"] else None)),
+             field("prefix", t(lang, "mqtt.prefix"), text("prefix", cfg["prefix"], maxlength=mqtt.MAX_PREFIX),
+                   t(lang, "mqtt.prefix_hint")),
+             field("device", t(lang, "mqtt.device"), text("device", cfg["device"], maxlength=32), t(lang, "mqtt.device_hint")),
+             switch_row(t(lang, "mqtt.discovery"), "discovery", "yes", cfg["discovery"]),
+             h("div", t(lang, "mqtt.discovery_hint"), class_="tip"),
+             h("div", h("button", t(lang, "cfgpage.save"), type="submit"), class_="actions"),
+             method="POST", action="/mqtt/save")
+    sections = cat(banner("ok", t(lang, "mqtt.saved")) if saved else "",
+                   banner("bad", t(lang, "mqtt.invalid")) if errors else "",
+                   h("section", h("h2", t(lang, "mqtt.title")), h("div", t(lang, "mqtt.intro"), class_="tip"), form))
+    return settings_page(lang, t(lang, "mqtt.title"), settings_url("general"), sections=sections)
+
+
 def render_yandex_auth(lang, params, error=""):
     """Страница, на которую Яндекс отправляет владельца при связке аккаунтов: вход admin и разрешение."""
     hidden = cat(h("input", type="hidden", name=k, value=params.get(k, "")) for k in ("client_id", "redirect_uri", "state", "response_type"))
@@ -2641,7 +2888,8 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
     for dev in devices:
         title = dev["name"] or dev["hardware"] or dev["host"]
         detail = " · ".join(x for x in (dev["host"], dev["hardware"] if dev["hardware"] != title else "") if x)
-        tag = h("span", t(lang, "onvif.added"), class_="tag") if dev["host"] in hosts else ""
+        added = dev["host"] in hosts
+        tag = h("span", t(lang, "onvif.added"), class_="tag") if added else ""
         sections.append(h(
             "section", h("h2", title, tag),
             h("form", h("input", type="hidden", name="csrf", value=csrf), h("input", type="hidden", name="xaddr", value=dev["xaddr"]),
@@ -2654,7 +2902,7 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
               h("div", h("div", t(lang, "cam.password"), class_="k"),
                 h("input", type="password", name="password", value="", autocomplete="new-password"), class_="row field"),
               h("div", h("button", t(lang, "onvif.add"), type="submit", data_busy=t(lang, "onvif.reading")), class_="actions"),
-              method="POST", action="/onvif")))
+              method="POST", action="/onvif"), class_="added" if added else None))
     intro = cat(banner("bad", error) if error else "", banner("ok" if devices else "bad", t(lang, "onvif.intro" if devices else "onvif.none")))
     q = "?setup=1" if setup else ""
     # «Искать снова» — форма: можно добавить подсеть за роутером (поиск по ней — запросом каждому адресу)
@@ -2669,6 +2917,18 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
         h("div", h("a", t(lang, "onvif.manual"), href=f"/camera/new{q}"), class_="choice"))
     back = "/setup/cameras" if setup else "/camera/new"
     return settings_page(lang, t(lang, "onvif.title"), back, "", "", cat(intro, sections, actions))
+
+
+def camera_address_hosts(cam):
+    """Имена хостов (без регистра) всех заданных адресов камеры: потоки и ONVIF."""
+    hosts = set()
+    for key in ("rtsp_url", "rtsp_sub_url", "onvif_url"):
+        if cam.get(key):
+            try:
+                hosts.add((urlparse(cam[key]).hostname or "").lower())
+            except ValueError:
+                hosts.add(cam[key])  # не разобрался — считается другим хостом
+    return hosts
 
 
 def render_camera_form(lang, csrf, cam=None, form=None, errors=None, problem=None, setup=False, notices=(),
@@ -2722,9 +2982,12 @@ def render_camera_form(lang, csrf, cam=None, form=None, errors=None, problem=Non
         if key == "rtsp_user":
             has = bool(cam and zorcam_config.camera_password(cam["id"]))
             placeholder = t(lang, "onvif.password_kept" if onvif_token else "cfgpage.password_placeholder" if has else "cam.password_none")
+            err = errors.get("password")
             fields.append(h("div", h("div", t(lang, "cam.password"), class_="k"),
                             h("input", type="password", name="password", value="", placeholder=placeholder,
-                              autocomplete="new-password"), class_="row field"))
+                              autocomplete="new-password"),
+                            h("div", err.text(lang), class_="msg") if err else "",
+                            class_="row field" + (" err" if err else "")))
     if problem:
         fields.append(h("div", h("label", h("input", type="checkbox", name="force", value="1"), t(lang, "cam.force"), class_="check"),
                         class_="row field"))
@@ -2820,6 +3083,20 @@ def render_setup_users(lang, csrf, error=None):
         h("p", t(lang, "setup.step", n=2), class_="steps"), h("p", t(lang, "setup.users_intro"), class_="intro"), form))
 
 
+def render_password_change(lang, csrf, error=None):
+    """«Смените пароль»: admin с паролем от установщика (zorcam_users.py set … --initial) задаёт свой или пропускает;
+    сюда ведёт главная страница, пока у admin стоит метка initial. Страница без «Назад» и панели, как мастер."""
+    form = h("form", h("input", type="hidden", name="csrf", value=csrf),
+             h("section", h("h2", t(lang, "setup.user_title.admin")),
+               h("div", h("div", t(lang, "login.user"), class_="k"), h("div", zorcam_users.ADMIN, class_="v"), class_="row"),
+               password_rows(lang, "", error)),
+             h("div", h("button", t(lang, "cfgpage.save"), type="submit"), class_="actions"),
+             method="POST", action=PASSWORD_URL)
+    skip = h("form", h("input", type="hidden", name="csrf", value=csrf),
+             h("button", t(lang, "pw.skip"), type="submit"), method="POST", action=PASSWORD_URL + "/skip", class_="skip")
+    return settings_page(lang, t(lang, "pw.title"), sections=cat(h("p", t(lang, "pw.intro"), class_="intro"), form, skip))
+
+
 def render_setup_cameras(lang):
     """Шаг 3: «Готовы добавить камеру?» — добавить (ещё одну) или закончить."""
     cams = cameras()
@@ -2849,9 +3126,14 @@ class Handler(BaseHTTPRequestHandler):
     # туннеля. Ответ без длины тела и ответ на POST (тело запроса не всегда прочитано) закрывают соединение —
     # см. end_headers; send_error Python закрывает сам. Без Nagle: заголовки и тело уходят двумя записями.
     protocol_version = "HTTP/1.1"
+    server_version = "zorcam"  # без версии Python в заголовке Server
+    sys_version = ""
     disable_nagle_algorithm = True
     status_code = 0
     sized = False  # в ответе есть Content-Length
+
+    def version_string(self):
+        return self.server_version
 
     def log_message(self, fmt, *args):
         pass
@@ -2881,13 +3163,19 @@ class Handler(BaseHTTPRequestHandler):
             self._identity = self.cloud_session() or ""
         return self._identity or self.cookie(SESSION_COOKIE)
 
+    @property
+    def on_tunnel(self):
+        """Соединение принял туннельный порт (TUNNEL_PORT, только 127.0.0.1), куда frpc подключается за облако. Решает
+        порт, а не адрес клиента: обратный прокси на самом Pi тоже приходит с 127.0.0.1 на порт 80."""
+        return bool(getattr(self.server, "tunnel", False))
+
     def via_cloud(self):
-        """Запрос пришёл через туннель облака: frpc подключается к 127.0.0.1, облако добавляет к каждому запросу
-        X-Zorcam-Identity."""
-        return self.client_address[0] == "127.0.0.1" and bool(self.headers.get("X-Zorcam-Identity"))
+        """Запрос пришёл через туннель облака: облако добавляет к каждому запросу X-Zorcam-Identity. На порту 80 заголовок
+        игнорируется."""
+        return self.on_tunnel and bool(self.headers.get("X-Zorcam-Identity"))
 
     def cloud_session(self):
-        """Вход через облако: X-Zorcam-Identity от туннеля (frpc подключается к 127.0.0.1), подписанный облаком,
+        """Вход через облако: X-Zorcam-Identity от туннеля (порт TUNNEL_PORT), подписанный облаком,
         для этого Pi. Дальше — как обычный вход этого пользователя галереи: его роль и камеры из users.json."""
         if not self.via_cloud():
             return None
@@ -2917,11 +3205,31 @@ class Handler(BaseHTTPRequestHandler):
             self.sized = True
         super().send_header(keyword, value)
 
+    def frame_ancestors(self):
+        """Кому можно встраивать страницу в рамку: ей самой; через туннель и для встроенного Live — ещё приложению облака
+        (его адрес облако присылает при привязке), иначе облако не покажет Live в своей странице."""
+        sources = ["'self'"]
+        if self.on_tunnel or self.is_embed():
+            origin = urlparse(zorcam_cloud.load().get("app_url") or "")
+            if (origin.scheme in ("https", "http") and origin.netloc
+                    and re.fullmatch(r"[A-Za-z0-9.-]+(:\d{1,5})?", origin.netloc)):
+                sources.append(f"{origin.scheme}://{origin.netloc}")
+        return " ".join(sources)
+
+    def is_embed(self):
+        parsed = urlparse(getattr(self, "path", ""))  # path нет, если разбор строки запроса не удался (ответ 400)
+        return parsed.path == "/" and parse_qs(parsed.query).get("embed") == ["1"]
+
     def end_headers(self):
         cookie = getattr(self, "refresh_cookie", None)
         if cookie:
             self.send_header("Set-Cookie", cookie)
             self.refresh_cookie = None
+        # script-src не ограничиваем: в страницах есть встроенные скрипты (window.T, window.PAGE) и обработчики oninput
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Content-Security-Policy",
+                         f"frame-ancestors {self.frame_ancestors()}; object-src 'none'; base-uri 'none'")
         # HTTP/1.1: клиент отличает конец ответа по Content-Length. Перенаправление и 416 без тела получают нулевую
         # длину; ответ с телом неизвестной длины — закрытие соединения; POST — тоже (обработчик мог не прочитать тело
         # запроса, остаток стал бы «следующим запросом»)
@@ -2942,7 +3250,7 @@ class Handler(BaseHTTPRequestHandler):
         if user is not None:
             self.user, self.role = user, role
             if refreshed:
-                self.refresh_cookie = session_cookie(token)  # продлеваем cookie вместе с сессией
+                self.refresh_cookie = session_cookie(token, secure=self.https_front())  # продлеваем cookie вместе с сессией
             return True
         self.send_response(302)
         self.send_header("Location", "/login")
@@ -2995,13 +3303,19 @@ class Handler(BaseHTTPRequestHandler):
                 return value.strip().strip('"')
         return None
 
+    def https_front(self):
+        """Браузер пришёл по HTTPS (обратный прокси говорит об этом в X-Forwarded-Proto; облако — только HTTPS): cookie
+        сессии тогда с Secure."""
+        return self.on_tunnel or (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower() == "https"
+
     def request_host(self):
         """Адрес, который набрал пользователь: за обратным прокси (HTTPS) — X-Forwarded-Host."""
         return (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0]
 
     def setup_allowed(self):
         """Шаги 1–2 мастера: пока нет пользователей и только из домашней сети; иначе — страница «Нет доступа»."""
-        if is_local_client(self.client_address[0], self.headers.get("X-Forwarded-For")):
+        # туннель облака — это интернет, а не домашняя сеть: мастер через него недоступен
+        if not self.on_tunnel and is_local_client(self.client_address[0], self.headers.get("X-Forwarded-For")):
             return True
         lang = self.lang
         self.send_html(settings_page(lang, t(lang, "denied.title"), sections=(
@@ -3021,7 +3335,7 @@ class Handler(BaseHTTPRequestHandler):
         """Форма шага 1–2 с проверкой CSRF мастера; None — ответ уже отправлен."""
         form = self.read_form()
         token = self.cookie(SETUP_COOKIE) or ""
-        if form is None or not token or not secrets.compare_digest(form.get("csrf", [""])[0], token):
+        if form is None or not token or not same_secret(form.get("csrf", [""])[0], token):
             self.send_error(403)
             return None
         return form
@@ -3086,13 +3400,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in STATIC_FILES:
             try:
-                self.send_file(os.path.join(STATIC_DIR, STATIC_FILES[path]), "image/png")
+                self.send_file(ICON_FILES[path], "image/png")
             except FileNotFoundError:
                 self.send_error(404)
             return
 
         if path.startswith("/static/"):  # CSS и JS страниц: без входа (нужны странице входа и мастеру), секретов в них нет
-            asset = ASSETS.get(path[len("/static/"):])
+            name = path[len("/static/"):]
+            asset = ASSETS.get(name)
+            if asset is None and name.startswith("brand/"):  # theme.css и знак надстройки (brand/): то же, но из своей папки
+                asset = BRAND.assets.get(name[len("brand/"):])
             if asset is None:
                 self.send_error(404)
                 return
@@ -3173,6 +3490,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/":
             qs = parse_qs(parsed.query)
+            # пароль admin задал установщик: сначала «Смените пароль» (и после входа формой, и после входа через облако);
+            # встроенный Live в рамке облака это не касается
+            if self.role == "admin" and zorcam_users.is_initial(self.user) and qs.get("embed", [""])[0] != "1":
+                self.redirect(PASSWORD_URL)
+                return
             tab = qs.get("tab", [DEFAULT_TAB])[0]
             if tab not in TABS and tab not in RECORD_TABS:
                 tab = DEFAULT_TAB
@@ -3234,6 +3556,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/setup/cameras":
             if self.require_role("admin"):
                 self.send_html(render_setup_cameras(self.lang))
+            return
+
+        if path == PASSWORD_URL:
+            if self.require_role("admin"):
+                self.send_html(render_password_change(self.lang, csrf_token(self.get_session_token())))
             return
 
         if path == "/cloud/v1/cameras":  # облачное приложение: камеры, которые видит этот пользователь
@@ -3309,16 +3636,26 @@ class Handler(BaseHTTPRequestHandler):
                                                   parse_qs(parsed.query).get("saved") == ["1"]))
             return
 
+        if path == "/mqtt":
+            if self.require_role("admin"):
+                if MQTT is None:
+                    self.send_error(503)
+                    return
+                self.send_html(render_mqtt_page(self.lang, csrf_token(self.get_session_token()),
+                                                parse_qs(parsed.query).get("saved") == ["1"]))
+            return
+
         if path == "/onvif":  # поиск камер ONVIF в домашней сети (несколько секунд)
             if self.require_role("admin"):
                 qs = parse_qs(parsed.query, keep_blank_values=True)
                 setup = qs.get("setup") == ["1"]
-                # подсеть из формы запоминается на этом устройстве; пустое поле — снова только сеть Pi
-                subnet = qs["subnet"][0].strip().replace(",", ".") if "subnet" in qs else (self.cookie(ONVIF_SUBNET_COOKIE) or "")
+                # подсеть из формы запоминается на этом устройстве; пустое поле — только сеть Pi, и так и запоминается
+                remembered = self.cookie(ONVIF_SUBNET_COOKIE)
+                subnet = (qs["subnet"][0].strip().replace(",", ".") if "subnet" in qs
+                          else ONVIF_SUBNET_DEFAULT if remembered is None else remembered)
                 cookies = []
                 if "subnet" in qs:
-                    cookies.append(f"{ONVIF_SUBNET_COOKIE}={quote(subnet)}; Path=/onvif; SameSite=Lax; "
-                                   + ("Max-Age=31536000" if subnet else "Max-Age=0"))
+                    cookies.append(f"{ONVIF_SUBNET_COOKIE}={quote(subnet)}; Path=/onvif; SameSite=Lax; Max-Age=31536000")
                 error = None
                 try:
                     devices = onvif.discover(ONVIF_SCAN_SECONDS, subnet)
@@ -3356,10 +3693,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.require_role("liveviewer"):
                 qs = parse_qs(parsed.query)
                 saved = qs.get("saved", [""])[0]
+                ended = qs.get("ended", [""])[0]  # сеансы этого пользователя завершены (admin)
                 self.send_html(render_settings(self.role, self.lang, self.user, csrf_token(self.get_session_token()),
                                                tab=qs.get("tab", ["general"])[0], chosen_lang=self.chosen_lang,
                                                saved=saved if saved in zorcam_users.load() else None,
-                                               added=qs.get("added", [""])[0] or None))
+                                               added=qs.get("added", [""])[0] or None,
+                                               ended=ended if ended in zorcam_users.load() else None,
+                                               signed_out=qs.get("signed_out", [""])[0] == "1"))
             return
 
         if path == "/push/key":
@@ -3428,14 +3768,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def tunnel_client_ip(self):
         """Адрес клиента, которого облако ставит в X-Zorcam-Client-IP запросам Яндекса через туннель (там
-        client_address всегда 127.0.0.1). Верим только запросу с 127.0.0.1 и только настоящему IP; иначе None."""
-        if self.client_address[0] != "127.0.0.1":
+        client_address всегда 127.0.0.1). Верим только запросу на туннельном порту и только настоящему IP; иначе None."""
+        if not self.on_tunnel:
             return None
         try:
             ip = ipaddress.ip_address((self.headers.get("X-Zorcam-Client-IP") or "").strip())
         except ValueError:
             return None
         return None if ip.is_loopback else str(ip)  # не делить счётчик с местными запросами
+
+    def client_ip(self):
+        """Адрес клиента для счётчиков неудачных входов. Через туннель — X-Zorcam-Client-IP от облака; от доверенного
+        обратного прокси ([gallery] trusted_proxies) — последний элемент X-Forwarded-For (его дописал сам прокси);
+        иначе адрес соединения: заголовок от кого попало ничего не значит."""
+        peer = self.client_address[0]
+        if self.on_tunnel:
+            return self.tunnel_client_ip() or peer
+        if peer in TRUSTED_PROXIES:
+            last = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            try:
+                return str(ipaddress.ip_address(last))
+            except ValueError:
+                pass
+        return peer
 
     def client_desc(self):
         fwd = self.headers.get("X-Forwarded-For")
@@ -3494,7 +3849,7 @@ class Handler(BaseHTTPRequestHandler):
         text = answer.decode("utf-8", errors="replace")
         # кандидаты, по которым браузер из интернета дойдёт до проброшенного порта: внешний IP, найденный по STUN
         # (работает и через облако: устройство само за NAT с пробросом, TURN облака остаётся запасным путём), и адрес,
-        # по которому открыта галерея (домен DDNS) — но не адрес облака: <id>.<домен облака> ведёт на его сервер, а там
+        # по которому открыта галерея (домен DDNS) — но не адрес облака: <id>.devices.<домен облака> ведёт на его сервер, а там
         # порта 8555 нет; домен, который у нас резолвится в частный адрес (KeenDNS из дома), тоже не годится
         if self.via_cloud():
             stun.note_cloud_ice(cloud_ice(self.headers.get("X-Zorcam-Ice")))
@@ -3554,8 +3909,15 @@ class Handler(BaseHTTPRequestHandler):
         if PUSH is None or data is None:
             self.send_error(400)
             return
+        if not same_secret(data.get("csrf", ""), csrf_token(self.get_session_token())):
+            self.send_error(403)
+            return
         if not subscribe:
-            PUSH.remove(str(data.get("endpoint", "")))
+            # чужую подписку не снять (её endpoint — секрет её владельца, но не повод доверять); admin снимает любую
+            endpoint = str(data.get("endpoint", ""))
+            owner = PUSH.subscriptions.get(endpoint, {}).get("user", user)
+            if owner == user or role == "admin":
+                PUSH.remove(endpoint)
             self.send_json({"ok": True})
             return
         sub = data.get("subscription")
@@ -3582,7 +3944,7 @@ class Handler(BaseHTTPRequestHandler):
         if form is None:
             self.send_error(400)
             return None
-        if not secrets.compare_digest(form.get("csrf", [""])[0], csrf_token(token)):
+        if not same_secret(form.get("csrf", [""])[0], csrf_token(token)):
             self.send_error(403)
             return None
         return form
@@ -3595,7 +3957,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_auth() or not self.require_role("viewer"):
             return
         data = self.read_json(4096)
-        if data is None or not secrets.compare_digest(str(data.get("csrf", "")), csrf_token(token)):
+        if data is None or not same_secret(data.get("csrf", ""), csrf_token(token)):
             self.send_error(403)
             return
         cam, on = data.get("camera"), data.get("on")
@@ -3624,7 +3986,8 @@ class Handler(BaseHTTPRequestHandler):
         return cam, cam_id
 
     def ptz_status(self):
-        """GET /ptz/<ID>: {"ptz": true}, если камера умеет поворачиваться (для показа кнопок в Live)."""
+        """GET /ptz/<ID>: {"ptz": true, "pan", "zoom"}, если камера умеет поворачиваться или зумить (для показа кнопок
+        в Live: стрелки — pan, «−» «+» — zoom)."""
         got = self.ptz_camera()
         if got is None:
             return
@@ -3632,9 +3995,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         if not got[0].get("onvif_url"):
-            self.send_json({"ptz": False, "reason": "no_onvif_url"})  # к камере не ходим: кнопки в Live неактивны
+            self.send_json({"ptz": False, "reason": "no_onvif_url"})  # к камере не ходим
             return
-        self.send_json({"ptz": ptz_of(got[0]) is not None})
+        cap = ptz_of(got[0])
+        self.send_json({"ptz": True, "pan": cap.get("pan", True), "zoom": cap.get("zoom", True)} if cap else {"ptz": False})
 
     def ptz_command(self):
         """POST /ptz/<ID> {csrf, action: move|stop, dir}: непрерывное движение камеры (с остановкой по таймеру камеры) или
@@ -3644,7 +4008,7 @@ class Handler(BaseHTTPRequestHandler):
         if got is None:
             return
         data = self.read_json(1024)
-        if data is None or not secrets.compare_digest(str(data.get("csrf", "")), csrf_token(token)):
+        if data is None or not same_secret(data.get("csrf", ""), csrf_token(token)):
             self.send_error(403)
             return
         cam, action, direction = got[0], data.get("action"), data.get("dir")
@@ -3658,7 +4022,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "no_onvif_url"}, status=409)
             return
         cap = ptz_of(cam)
-        if cap is None:
+        # направление, которого камера не умеет (стрелки у камеры с одним зумом и наоборот), — как камера без PTZ
+        if cap is None or (action == "move" and not cap.get("zoom" if direction in ("in", "out") else "pan", True)):
             self.send_json({"ok": False, "error": "unsupported"}, status=409)
             return
         if action == "move":
@@ -3759,10 +4124,40 @@ class Handler(BaseHTTPRequestHandler):
         log(f"users: {name} deleted by {self.user} from {self.client_desc()}")
         self.redirect(settings_url("users"))
 
+    def sessions_others(self):
+        """«Выйти на других устройствах»: все сессии этого пользователя, кроме текущей. Любая роль."""
+        token = self.get_session_token()
+        if not self.require_auth() or not self.require_role("liveviewer"):
+            return
+        form = self.read_form(4096)
+        if form is None:
+            self.send_error(400)
+            return
+        if not same_secret(form.get("csrf", [""])[0], csrf_token(token)):
+            self.send_error(403)
+            return
+        count = end_sessions(self.user, keep=token)
+        log(f"sessions: {self.user} signed out {count} other session(s) from {self.client_desc()}")
+        self.redirect(settings_url("users") + "&signed_out=1")
+
+    def users_sessions(self):
+        """admin завершает все сессии другого пользователя (себе — «Выйти на других устройствах»)."""
+        form = self.admin_form(4096)
+        if form is None:
+            return
+        name = form.get("user", [""])[0]
+        if name not in zorcam_users.load() or name == self.user:
+            self.send_error(400)
+            return
+        count = end_sessions(name)
+        log(f"sessions: {name} signed out everywhere ({count} session(s)) by {self.user} from {self.client_desc()}")
+        self.redirect(settings_url("users") + "&ended=" + quote(name))
+
     def motion_event(self):
-        """Сигнал от детектора движения (zorcam-nvr-capture) — только с самого Pi."""
-        if self.client_address[0] != "127.0.0.1" or self.headers.get("X-Forwarded-For") \
-                or self.headers.get("X-Zorcam-Identity"):  # туннель облака тоже приходит с 127.0.0.1
+        """Сигнал от детектора движения (zorcam-nvr-capture) — только с самого Pi, на порту 80 и с общим секретом
+        (X-Zorcam-Internal): иначе его мог бы слать любой локальный процесс или запрос из интернета через прокси."""
+        if (self.on_tunnel or self.client_address[0] != "127.0.0.1" or self.headers.get("X-Forwarded-For")
+                or not INTERNAL_TOKEN or not same_secret(self.headers.get("X-Zorcam-Internal"), INTERNAL_TOKEN)):
             self.send_error(403)
             return
         data = self.read_json() or {}
@@ -3771,6 +4166,8 @@ class Handler(BaseHTTPRequestHandler):
         cam = camera(cam_id)
         if cam is not None and YANDEX is not None:  # датчик движения в «Доме с Алисой» — независимо от push
             YANDEX.motion(cam_id)
+        if cam is not None and MQTT is not None and cam.get("enabled", True):  # MQTT: все включённые камеры, независимо от push
+            MQTT.motion(cam_id)
         if cam is not None and zorcam_cloud.state() == "paired":  # лента движений облака: без снимка, только время
             viewers = sorted(u for u, v in zorcam_users.load().items() if can_see(u, v["role"], cam_id))
             try:
@@ -3865,7 +4262,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         zorcam_users.set_user(zorcam_users.ADMIN, "admin", p1)
         log(f"setup: user {zorcam_users.ADMIN} (admin) created from {self.client_desc()}")
-        self.redirect("/setup/cameras", session_cookie(create_session(zorcam_users.ADMIN)))
+        self.redirect("/setup/cameras", session_cookie(create_session(zorcam_users.ADMIN), secure=self.https_front()))
+
+    def after_password(self):
+        """Куда ведёт «Смените пароль» после «Сохранить» и «Пропустить»: камер ещё нет — к их добавлению (шаг 3 мастера),
+        иначе на главную."""
+        return "/" if cameras() else "/setup/cameras"
+
+    def password_save(self):
+        """«Смените пароль» → «Сохранить»: свой пароль admin вместо выданного установщиком (метка initial снимается, как
+        при любой установке пароля); остальные сессии admin завершаются, как при смене пароля в «Польз.»."""
+        form = self.admin_form(8192)
+        if form is None:
+            return
+        p1, p2 = form.get("password", [""])[0], form.get("repeat", [""])[0]
+        err = password_error(p1, p2, required=True)
+        if err:
+            self.send_html(render_password_change(self.lang, csrf_token(self.get_session_token()), err), status=400)
+            return
+        zorcam_users.set_user(self.user, "admin", p1)
+        end_sessions(self.user, keep=self.get_session_token())
+        log(f"users: {self.user} replaced the password set by the installer, from {self.client_desc()}")
+        self.redirect(self.after_password())
+
+    def password_skip(self):
+        """«Смените пароль» → «Пропустить»: пароль от установщика остаётся, метка initial снимается — больше не спрашивать."""
+        form = self.admin_form(4096)
+        if form is None:
+            return
+        zorcam_users.clear_initial(self.user)
+        log(f"users: {self.user} kept the password set by the installer, from {self.client_desc()}")
+        self.redirect(self.after_password())
 
     # ---- камеры
 
@@ -3898,6 +4325,13 @@ class Handler(BaseHTTPRequestHandler):
         password = form.get("password", [""])[0] or (onvif_password(token) if token and not old else "")
         if old and not password:
             password = zorcam_config.camera_password(old["id"])  # пусто — не менять
+            # сохранённый пароль уйдёт на адреса камеры (проверка, go2rtc, PTZ): на новый хост — только введённый заново
+            if password and cam["rtsp_user"] and not camera_address_hosts(cam) <= camera_address_hosts(old):
+                log(f"cameras: {old['id']} address changed without a new password, refused for {self.user} "
+                    f"from {self.client_desc()}")
+                errors = {"password": Msg("cam.password_again")}
+                self.send_html(render_camera_form(lang, csrf, old, raw, errors, setup=setup, onvif_token=token), status=400)
+                return
         if not cam["rtsp_user"]:
             password = ""
         # камера отвечает до сохранения; пароль остаётся в этом процессе (без командной строки)
@@ -4061,10 +4495,11 @@ class Handler(BaseHTTPRequestHandler):
     # ---- «Умный дом Яндекса»
 
     def yandex_open(self):
-        """Адреса для Яндекса отвечают, только пока подключено облако и запрос пришёл через его туннель (frpc
-        подключается к 127.0.0.1, заголовка X-Zorcam-Identity у запросов Яндекса нет): свой домен и домашняя сеть
-        для навыка больше не работают. Иначе ответ как на неизвестный путь."""
-        if YANDEX is not None and self.client_address[0] == "127.0.0.1" and yandex_cloud_url():
+        """Адреса для Яндекса отвечают, только пока подключено облако, сохранены ключи навыка и запрос пришёл через
+        его туннель (порт TUNNEL_PORT; заголовка X-Zorcam-Identity у запросов Яндекса нет): свой домен и
+        домашняя сеть для навыка больше не работают, а устройство без навыка не даёт из интернета проверять пароль
+        admin. Иначе ответ как на неизвестный путь."""
+        if YANDEX is not None and self.on_tunnel and yandex_cloud_url() and YANDEX.configured():
             return True
         self.send_error(404)
         return False
@@ -4075,7 +4510,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in STATIC_FILES:
             try:
-                size = os.path.getsize(os.path.join(STATIC_DIR, STATIC_FILES[path]))
+                size = os.path.getsize(ICON_FILES[path])
             except OSError:
                 self.send_error(404)
                 return
@@ -4109,6 +4544,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def yandex_failed(self):
+        if yandex_register_failed():
+            log(f"yandex: {YANDEX_MAX_FAILURES} failed sign-ins in {YANDEX_FAILURE_WINDOW // 60} min, "
+                f"the skill addresses answer 429 until the window passes (last from {self.client_desc()})")
+
     def yandex_auth(self):
         """Связка аккаунтов: вход admin (логин и пароль Zorcam) — и обратно в Яндекс с кодом авторизации."""
         if not self.yandex_open():
@@ -4117,13 +4557,14 @@ class Handler(BaseHTTPRequestHandler):
         if form.get("client_id") != yandex.CLIENT_ID or not YANDEX.valid_redirect(form.get("redirect_uri")):
             self.send_error(400)
             return
-        lang, ip = self.lang, self.tunnel_client_ip() or self.client_address[0]
-        if is_locked_out(ip):
+        lang, ip = self.lang, self.client_ip()
+        if is_locked_out(ip) or yandex_locked_out():
             self.send_html(render_yandex_auth(lang, form, t(lang, "login.locked")), status=429)
             return
         name, role = check_login(form.get("username", ""), form.get("password", ""))
         if role != "admin":
             register_failed(ip)
+            self.yandex_failed()
             self.send_html(render_yandex_auth(lang, form, t(lang, "ya.auth_wrong")), status=401)
             return
         code = YANDEX.issue_code(form["redirect_uri"], name)
@@ -4134,13 +4575,14 @@ class Handler(BaseHTTPRequestHandler):
     def yandex_token(self):
         if not self.yandex_open():
             return
-        ip = self.tunnel_client_ip() or self.client_address[0]  # через туннель — реальный клиент, не 127.0.0.1
-        if is_locked_out(ip):  # подбор секрета приложения — как подбор пароля
+        ip = self.client_ip()  # через туннель — реальный клиент, не 127.0.0.1
+        if is_locked_out(ip) or yandex_locked_out():  # подбор секрета приложения — как подбор пароля
             self.send_json({"error": "slow_down"}, 429)
             return
         status, body = YANDEX.token(self.read_form(8192) or {}, self.headers.get("Authorization", ""))
         if status == 401:
             register_failed(ip)
+            self.yandex_failed()
         if status != 200:
             log(f"yandex: token request refused ({body['error']}) from {self.client_desc()}")
         self.send_json(body, status)
@@ -4185,6 +4627,28 @@ class Handler(BaseHTTPRequestHandler):
         log(f"yandex: settings saved by {self.user} from {self.client_desc()}")
         self.redirect("/yandex?saved=1")
 
+    def mqtt_save(self):
+        form = self.admin_form(8192)
+        if form is None:
+            return
+        if MQTT is None:
+            self.send_error(503)
+            return
+        fields = {k: v[0] for k, v in form.items()}
+        with MQTT.lock:
+            current = dict(MQTT.cfg)
+        cfg, errors = mqtt.validate(fields, current)
+        if errors:  # введённое остаётся в форме (кроме пароля)
+            values = {k: fields.get(k, "") for k in ("host", "port", "username", "prefix", "device")}
+            values.update(enabled="enabled" in fields, tls="tls" in fields, discovery="discovery" in fields)
+            self.send_html(render_mqtt_page(self.lang, csrf_token(self.get_session_token()), values=values, errors=errors),
+                           status=400)
+            return
+        MQTT.save(cfg)
+        log(f"mqtt: settings saved by {self.user} from {self.client_desc()} "
+            f"({'on, ' + cfg['host'] + ':' + str(cfg['port']) if cfg['enabled'] else 'off'})")
+        self.redirect("/mqtt?saved=1")
+
     def yandex_admin_unlink(self):
         form = self.admin_form(4096)
         if form is None:
@@ -4194,8 +4658,31 @@ class Handler(BaseHTTPRequestHandler):
             log(f"yandex: unlinked by {self.user} from {self.client_desc()}")
         self.redirect("/yandex")
 
+    def foreign_post(self):
+        """Запрос, который браузер послал со страницы другого источника. Через облако устройства живут на
+        <id>.devices.<домен облака> — для браузера один «сайт», и cookie облака уходят и со страницы чужого устройства.
+        Sec-Fetch-Site (все современные браузеры) — только same-origin и none; иначе Origin должен быть адресом
+        самого устройства; нет ни того, ни другого (curl, старые клиенты) — пропускаем: формы защищены токенами."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site:
+            return site not in ("same-origin", "none")
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return False
+        host = urlparse(origin).netloc.lower()
+        ours = {(self.headers.get("Host") or "").strip().lower(),
+                (self.headers.get("X-Forwarded-Host") or "").split(",")[0].strip().lower()} - {""}
+        return host not in ours
+
     def do_POST(self):
         path = urlparse(self.path).path
+        # машинные адреса (детектор, Яндекс) браузер не вызывает; остальное — только со страниц самого устройства
+        if (path != "/internal/motion" and path != "/yandex/token" and not path.startswith("/yandex/v1.0/")
+                and self.foreign_post()):
+            log(f"post: {path} refused, cross-site request from {self.client_desc()} "
+                f"(Sec-Fetch-Site {self.headers.get('Sec-Fetch-Site')}, Origin {self.headers.get('Origin')})")
+            self.send_error(403)
+            return
         routes = {
             "/config": self.config_save,
             "/internal/motion": self.motion_event,
@@ -4204,10 +4691,14 @@ class Handler(BaseHTTPRequestHandler):
             "/storage/delete": self.storage_delete,
             "/users/save": self.users_save,
             "/users/delete": self.users_delete,
+            "/users/sessions": self.users_sessions,
+            "/sessions/others": self.sessions_others,
             "/live/webrtc": self.proxy_webrtc,
             "/live/webrtc-log": self.webrtc_log,
             "/setup": self.setup_general_save,
             "/setup/users": self.setup_users_save,
+            PASSWORD_URL: self.password_save,
+            PASSWORD_URL + "/skip": self.password_skip,
             "/camera/save": self.camera_save,
             "/onvif": self.onvif_camera,
             "/camera/delete": self.camera_delete,
@@ -4218,6 +4709,7 @@ class Handler(BaseHTTPRequestHandler):
             "/settings/notify": self.notify_set,
             "/cloud/disconnect": self.cloud_disconnect,
             "/yandex/save": self.yandex_save,
+            "/mqtt/save": self.mqtt_save,
             "/yandex/unlink": self.yandex_admin_unlink,
             "/yandex/auth": self.yandex_auth,
             "/yandex/token": self.yandex_token,
@@ -4237,28 +4729,75 @@ class Handler(BaseHTTPRequestHandler):
         form = self.read_form(8192) or {}
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
-        client_ip = self.client_address[0]
+        client_ip = self.client_ip()
 
-        if is_locked_out(client_ip):
+        if is_locked_out(client_ip) or user_locked_out(username):
             self.send_html(login_page(self.lang, "login.locked"), status=429)
             return
 
         name, role = check_login(username, password)
         if role:
+            clear_user_failed(username)
             log(f"login: {name} ({role}) from {self.client_desc()}")
             token = create_session(name)
             self.send_response(302)
             self.send_header("Location", "/?tab=live")
-            self.send_header("Set-Cookie", session_cookie(token))
+            self.send_header("Set-Cookie", session_cookie(token, secure=self.https_front()))
             self.end_headers()
             return
 
         register_failed(client_ip)
+        pause = register_user_failed(username)
+        if pause:
+            # набранное имя — в журнал, только если такой пользователь есть: в поле имени могли набрать пароль
+            who = (json.dumps(zorcam_users.find(username.strip()), ensure_ascii=False)
+                   if zorcam_users.find(username.strip()) else "an unknown name")
+            log(f"login: sign-in as {who} is closed for {pause} s after repeated failures "
+                f"(last from {self.client_desc()})")
         self.send_html(login_page(self.lang, "login.wrong"), status=401)
 
 
 class Server(ThreadingHTTPServer):
     request_queue_size = 64  # сетка превью открывает подключения пачкой; по умолчанию очередь — 5
+    max_connections = MAX_CONNECTIONS
+
+    def __init__(self, address, handler, tunnel=False):
+        self.tunnel = tunnel  # туннельный порт: см. Handler.on_tunnel
+        self.slots = threading.BoundedSemaphore(self.max_connections)
+        super().__init__(address, handler)
+
+    def exempt(self, client_address):
+        """Сам Pi на порту 80 (проверка /healthz для watchdog systemd, детектор) мимо лимита: иначе соединения из
+        сети, занявшие все места, остановили бы WATCHDOG=1 и systemd перезапустил бы галерею. Туннельный порт
+        целиком приходит с 127.0.0.1 (frpc), там лимит действует для всех."""
+        if self.tunnel:
+            return False
+        try:
+            ip = ipaddress.ip_address(client_address[0])
+        except ValueError:
+            return False
+        return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+
+    def process_request(self, request, client_address):
+        """Поток на соединение, но не больше max_connections одновременно: остальные закрываются сразу, а не копят
+        потоки (память Pi 3), пока их кто-то держит открытыми."""
+        if self.exempt(client_address):
+            return super().process_request(request, client_address)
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            if not self.exempt(client_address):
+                self.slots.release()
 
     def handle_error(self, request, client_address):
         """Телефон оборвал загрузку (перемотка или закрытие ролика) — обычное дело, не ошибка: без трассировки
@@ -4279,6 +4818,14 @@ if __name__ == "__main__":
     threading.Thread(target=config_watch_loop, daemon=True).start()
     if YANDEX is not None:
         threading.Thread(target=YANDEX.loop, daemon=True).start()
+    if MQTT is not None:
+        threading.Thread(target=MQTT.loop, daemon=True).start()
     threading.Thread(target=cloud_event_loop, daemon=True).start()
     threading.Thread(target=stun.loop, args=(log,), daemon=True).start()
+    # туннель облака — отдельный порт только на localhost; заголовкам облака и адресам Яндекса галерея верит только там
+    try:
+        tunnel_server = Server(("127.0.0.1", TUNNEL_PORT), Handler, tunnel=True)
+        threading.Thread(target=tunnel_server.serve_forever, daemon=True).start()
+    except OSError as e:  # порт занят: без облака можно жить, без галереи дома — нет
+        log(f"tunnel port {TUNNEL_PORT} is not available, the cloud cannot reach the gallery: {e}")
     Server(("0.0.0.0", PORT), Handler).serve_forever()

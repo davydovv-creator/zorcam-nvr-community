@@ -68,10 +68,8 @@
     if (hlsWaiting) { hlsWaiting.push(cb); return; }
     hlsWaiting = [cb];
     var s = document.createElement('script');
-    // the exact version and its hash (SRI): a file changed on the CDN does not run (it would have the gallery session)
+    // hls.js is a file of the device itself (/static/hls.min.js?v=<hash>), not a CDN: nothing is fetched from the internet
     s.src = PAGE.hlsUrl;
-    s.integrity = PAGE.hlsSri;
-    s.crossOrigin = 'anonymous';
     var done = function(ok) { var w = hlsWaiting; hlsWaiting = null; w.forEach(function(f) { f(ok); }); };
     s.onload = function() { done(true); };
     s.onerror = function() { done(false); };
@@ -378,12 +376,16 @@
       ctrl.parentNode.addEventListener('pointerenter', function() { hover = ctrl; });
       fetch('/ptz/' + encodeURIComponent(ctrl.getAttribute('data-cam')), { credentials: 'same-origin' })
         .then(function(r) { return r.ok ? r.json() : {}; }).then(function(j) {
-          if (j && j.ptz) { ctrl.hidden = false; if (!hover) hover = ctrl; }
-          else if (j && j.reason === 'no_onvif_url') {
-            var tg = ctrl.querySelector('.ptz-toggle');
-            tg.disabled = true; tg.title = T['ptz.no_onvif'];
-            ctrl.hidden = false;
-          }
+          if (!j || !j.ptz) return;
+          // only the buttons the camera can do: the arrows for pan and tilt, - and + for the zoom
+          var pan = j.pan !== false, zoom = j.zoom !== false;
+          ctrl.querySelectorAll('.ptz-btn').forEach(function(b) {
+            var z = b.getAttribute('data-dir') === 'in' || b.getAttribute('data-dir') === 'out';
+            b.hidden = z ? !zoom : !pan;
+          });
+          ctrl.querySelector('.ptz-pad').classList.toggle('zoom-only', !pan);
+          ctrl.hidden = false;
+          if (!hover) hover = ctrl;
         }).catch(function() {});
     });
     document.addEventListener('visibilitychange', function() { if (document.hidden) release(); });
@@ -399,9 +401,11 @@
       var dir = KEYS[e.key];
       if (!dir || e.ctrlKey || e.metaKey || e.altKey || typing() || current !== 'live') return;
       if (!hover || hover.hidden || !hover.offsetParent || !opened(hover)) return;
+      var btn = hover.querySelector('[data-dir="' + dir + '"]');
+      if (!btn || btn.hidden) return;
       e.preventDefault();
       if (e.repeat || (held && held.key === e.key)) return;
-      press(hover, dir, hover.querySelector('[data-dir="' + dir + '"]'));
+      press(hover, dir, btn);
       held.key = e.key;
     });
     window.addEventListener('keyup', function(e) { if (held && held.key === e.key) release(); });
@@ -445,6 +449,7 @@
       return true;
     }
     function post(url, data) {
+      data.csrf = bell.getAttribute('data-csrf');
       return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data) }).then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r; });
     }
@@ -536,6 +541,11 @@
   tabs.forEach(function(btn) {
     btn.addEventListener('click', function() {
       var name = btn.getAttribute('data-tab');
+      // one-camera Live (?tab=live&cam=ID) is a separate page: the Live tab leads to all the cameras
+      if (name === 'live' && document.querySelector('.panel[data-panel=live][data-single]')) {
+        location.href = '/?tab=live';
+        return;
+      }
       if (name === 'records') {  // Records opens on Timelapse; Videos is one tap away in the switch
         if (current === 'videos' || current === 'all') return;
         name = 'all';

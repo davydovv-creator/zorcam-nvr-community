@@ -11,11 +11,12 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+import app  # noqa: F401
 import zorcam_cloud
 import zorcam_config
 import zorcam_users
 from zorcam_i18n import t
-from test_gallery import assets, cookies, login, request, server  # noqa: F401  (fixtures)
+from test_gallery import assets, cookies, login, motion_headers, request, server, tunnel  # noqa: F401  (fixtures)
 
 CLOUD_KEY = Ed25519PrivateKey.generate()
 
@@ -38,6 +39,8 @@ class FakeCloud(BaseHTTPRequestHandler):
     paired = False
     calls = []
     device_key = None
+    owner = "Anna K."  # None: an older cloud that does not send owner_name
+    address = {}  # replaces/adds fields of the status reply; a None value drops the field
 
     def log_message(self, *a):
         pass
@@ -63,9 +66,11 @@ class FakeCloud(BaseHTTPRequestHandler):
     def do_GET(self):
         FakeCloud.calls.append(("GET", self.path, self.signed_ok(b"")))
         if FakeCloud.paired:
-            self.reply({"paired": True, "name": "Dacha", "url": "https://dev1234567.zorcam.test",
-                        "app_url": "https://cloud.zorcam.test", "frps_addr": "tunnel.zorcam.test", "frps_port": 443,
-                        "subdomain": "dev1234567", "cloud_key": raw_public(CLOUD_KEY)})
+            reply = {"paired": True, "name": "Dacha", "url": "https://dev1234567.zorcam.test",
+                     "app_url": "https://cloud.zorcam.test", "frps_addr": "tunnel.zorcam.test", "frps_port": 443,
+                     "subdomain": "dev1234567", "cloud_key": raw_public(CLOUD_KEY),
+                     **({"owner_name": FakeCloud.owner} if FakeCloud.owner else {}), **FakeCloud.address}
+            self.reply({k: v for k, v in reply.items() if v is not None})
         else:
             self.reply({"paired": False})
 
@@ -83,7 +88,7 @@ class FakeCloud(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_cloud():
-    FakeCloud.paired, FakeCloud.calls = False, []
+    FakeCloud.paired, FakeCloud.calls, FakeCloud.owner, FakeCloud.address = False, [], "Anna K.", {}
     srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeCloud)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}"
@@ -107,8 +112,9 @@ def test_pairing_tunnel_and_unlink(fake_cloud, monkeypatch):
     conf = zorcam_cloud.frpc_config(data)
     for line in ('serverAddr = "tunnel.zorcam.test"', "serverPort = 443", 'transport.protocol = "wss"',
                  'metadatas.device = "dev1234567"', 'metadatas.token = "tunnel-token"', 'subdomain = "dev1234567"',
-                 "localPort = 80"):
+                 f"localPort = {zorcam_cloud.TUNNEL_PORT}"):
         assert line in conf, line
+    assert zorcam_cloud.TUNNEL_PORT == 8081 and "localPort = 80\n" not in conf  # not the port of the home network
     # identity: the cloud's signature, this device, not expired
     assert zorcam_cloud.verify_identity(identity("dev1234567", "admin")) == "admin"
     assert zorcam_cloud.verify_identity(identity("other12345", "admin")) is None
@@ -131,33 +137,53 @@ def pair_locally():
                           "cloud_key": raw_public(CLOUD_KEY), "private_key": b64e(b"\0" * 32), "url": "https://x"})
 
 
-def test_gallery_sign_in_through_the_cloud(server):  # noqa: F811
+def test_gallery_sign_in_through_the_cloud(server, tunnel):  # noqa: F811
     pair_locally()
     try:
         # admin through the tunnel: no password, a normal gallery session for admin
-        status, headers, body = request(server, "GET", "/settings",
+        status, headers, body = request(tunnel, "GET", "/settings",
                                         headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
         assert status == 200 and "zorcam_session=" in headers["Set-Cookie"] and 'action="/cloud/disconnect"' in body
         assert "; Secure" in headers["Set-Cookie"]  # the cloud is HTTPS only: the cookie never goes over HTTP
         cookie = headers["Set-Cookie"].split(";")[0]
         # the same cookie with a fresh token: no new session
-        status, headers, _ = request(server, "GET", "/", cookie=cookie,
+        status, headers, _ = request(tunnel, "GET", "/", cookie=cookie,
                                      headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
         assert status == 200 and "Set-Cookie" not in headers
         # a viewer gets the viewer's rights, not the cookie's admin
-        status, _, body = request(server, "GET", "/config", cookie=cookie,
+        status, _, body = request(tunnel, "GET", "/config", cookie=cookie,
                                   headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})
         assert status == 403
         # forged, foreign or for a missing user: the usual sign-in page
         for tok in (identity("dev1234567", "admin", key=Ed25519PrivateKey.generate()),
                     identity("other12345", "admin"), identity("dev1234567", "nobody"), "garbage"):
-            status, headers, _ = request(server, "GET", "/", headers={"X-Zorcam-Identity": tok})
+            status, headers, _ = request(tunnel, "GET", "/", headers={"X-Zorcam-Identity": tok})
             assert status == 302 and headers["Location"] == "/login", tok
     finally:
         zorcam_cloud.remove()
 
 
-def test_header_brand_shows_the_viewing_mode(server, cookies):  # noqa: F811
+def test_admin_through_the_cloud_is_asked_to_change_the_installer_password(server, tunnel):  # noqa: F811
+    """The mark of the installer's password leads admin to "Change the password" after signing in through the cloud
+    too (the main page decides, not the sign-in form); another user of the cloud is not asked."""
+    pair_locally()
+    users = zorcam_users.load()
+    users["admin"]["initial"] = True
+    zorcam_users.save(users)
+    try:
+        status, headers, _ = request(tunnel, "GET", "/", headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
+        assert status == 303 and headers["Location"] == "/setup/password"
+        cookie = headers["Set-Cookie"].split(";")[0]
+        status, _, body = request(tunnel, "GET", "/setup/password", cookie=cookie,
+                                  headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
+        assert status == 200 and t("en", "pw.title") in body
+        assert request(tunnel, "GET", "/", headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})[0] == 200
+    finally:
+        zorcam_users.clear_initial("admin")
+        zorcam_cloud.remove()
+
+
+def test_header_brand_shows_the_viewing_mode(server, tunnel, cookies):  # noqa: F811
     from zorcam_i18n import STRINGS
     for key in ("brand.nvr", "brand.cloud", "brand.tip_nvr", "brand.tip_cloud"):
         assert STRINGS[key]["en"] and STRINGS[key]["ru"]
@@ -170,13 +196,13 @@ def test_header_brand_shows_the_viewing_mode(server, cookies):  # noqa: F811
     pair_locally()
     try:
         for path in ("/", "/settings"):
-            body = request(server, "GET", path, headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})[2]
+            body = request(tunnel, "GET", path, headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})[2]
             assert "Zorcam.cloud" in body and 'data-view="cloud"' in body and "Zorcam.nvr" not in body
     finally:
         zorcam_cloud.remove()
 
 
-def test_yandex_admin_page_through_the_cloud_sign_in(server):  # noqa: F811
+def test_yandex_admin_page_through_the_cloud_sign_in(server, tunnel):  # noqa: F811
     """The cloud lets only the addresses for Yandex pass without its own sign-in; /yandex and its forms come with
     X-Zorcam-Identity: admin works there (CSRF of the cloud session), a viewer does not."""
     import app
@@ -186,17 +212,17 @@ def test_yandex_admin_page_through_the_cloud_sign_in(server):  # noqa: F811
     before = json.loads(json.dumps(ya.data))
     admin = {"X-Zorcam-Identity": identity("dev1234567", "admin")}
     try:
-        status, headers, page = request(server, "GET", "/yandex", headers=admin)
+        status, headers, page = request(tunnel, "GET", "/yandex", headers=admin)
         assert status == 200 and 'action="/yandex/save"' in page and "https://x/yandex/token" in page
         cookie = headers["Set-Cookie"].split(";")[0]
         csrf = re.search(r'action="/yandex/save"><input type="hidden" name="csrf" value="([0-9a-f]+)"', page).group(1)
-        assert request(server, "GET", "/yandex", headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})[0] == 403
-        status, headers, _ = request(server, "POST", "/yandex/save", urlencode({"csrf": csrf, "skill_id": "s-1"}),
+        assert request(tunnel, "GET", "/yandex", headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})[0] == 403
+        status, headers, _ = request(tunnel, "POST", "/yandex/save", urlencode({"csrf": csrf, "skill_id": "s-1"}),
                                      cookie=cookie, headers=admin)
         assert status == 303 and headers["Location"] == "/yandex?saved=1" and ya.status()["skill_id"] == "s-1"
-        assert request(server, "POST", "/yandex/save", urlencode({"csrf": "bad", "skill_id": "s-2"}),
+        assert request(tunnel, "POST", "/yandex/save", urlencode({"csrf": "bad", "skill_id": "s-2"}),
                        cookie=cookie, headers=admin)[0] == 403
-        status, headers, _ = request(server, "POST", "/yandex/unlink", urlencode({"csrf": csrf}),
+        status, headers, _ = request(tunnel, "POST", "/yandex/unlink", urlencode({"csrf": csrf}),
                                      cookie=cookie, headers=admin)
         assert status == 303 and headers["Location"] == "/yandex"
         assert ya.status()["skill_id"] == "s-1"
@@ -207,20 +233,21 @@ def test_yandex_admin_page_through_the_cloud_sign_in(server):  # noqa: F811
             ya._save()
 
 
-def test_cloud_sign_in_does_not_make_a_session_per_request(server):  # noqa: F811
+def test_cloud_sign_in_does_not_make_a_session_per_request(server, tunnel):  # noqa: F811
     """The cloud asks without a cookie (camera list, posters): one gallery session per user, not one per request."""
     import app
     pair_locally()
     try:
         counts = []
         for _ in range(3):
-            assert request(server, "GET", "/cloud/v1/cameras",
+            assert request(tunnel, "GET", "/cloud/v1/cameras",
                            headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})[0] == 200
             counts.append(len(app.SESSIONS))
         assert counts[0] == counts[1] == counts[2]
-        # the tunnel cannot reach the detector's endpoint
-        assert request(server, "POST", "/internal/motion", "{}", headers={
+        # the tunnel cannot reach the detector's endpoint, not even with its secret
+        assert request(tunnel, "POST", "/internal/motion", "{}", headers={
             "X-Zorcam-Identity": identity("dev1234567", "admin"), "Content-Type": "application/json"})[0] == 403
+        assert request(tunnel, "POST", "/internal/motion", "{}", headers=motion_headers())[0] == 403
     finally:
         zorcam_cloud.remove()
 
@@ -236,8 +263,38 @@ def test_connect_errors_are_translated(server, cookies):  # noqa: F811
     assert status == 502 and t("ru", "cloud.why.address") in body
 
 
-def test_not_paired_ignores_the_header(server):  # noqa: F811
-    status, headers, _ = request(server, "GET", "/", headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
+def test_identity_is_trusted_only_on_the_tunnel_port(server, tunnel, cookies):  # noqa: F811
+    """A reverse proxy on the device (HTTPS by DDNS) also comes from 127.0.0.1, but to port 80: the cloud's headers
+    mean nothing there, and the setup wizard is closed on the tunnel in any case."""
+    import app
+    pair_locally()
+    try:
+        via = {"X-Zorcam-Identity": identity("dev1234567", "admin")}
+        assert request(tunnel, "GET", "/settings", headers=via)[0] == 200
+        status, headers, _ = request(server, "GET", "/settings", headers=via)
+        assert status == 302 and headers["Location"] == "/login" and "Set-Cookie" not in headers
+        assert request(server, "GET", "/cloud/v1/cameras", headers=via)[0] in (302, 401, 403)
+        body = request(server, "GET", "/", cookie=cookies["admin"], headers=via)[2]
+        assert "Zorcam.nvr" in body and "Zorcam.cloud" not in body  # not shown as the cloud
+        # no users yet: the wizard is for the home network, and the tunnel is not it
+        users = zorcam_users.load()
+        saved = app.setup_needed
+        app.setup_needed = lambda: True
+        try:
+            assert request(server, "GET", "/setup")[0] == 200
+            assert request(tunnel, "GET", "/setup")[0] == 403
+            assert request(tunnel, "GET", "/setup", headers={"X-Forwarded-For": "192.168.1.5"})[0] == 403
+            assert request(tunnel, "POST", "/setup", "csrf=x")[0] == 403
+            assert request(tunnel, "POST", "/setup/users", "csrf=x")[0] == 403
+        finally:
+            app.setup_needed = saved
+        assert zorcam_users.load() == users
+    finally:
+        zorcam_cloud.remove()
+
+
+def test_not_paired_ignores_the_header(server, tunnel):  # noqa: F811
+    status, headers, _ = request(tunnel, "GET", "/", headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
     assert status == 302 and headers["Location"] == "/login"
 
 
@@ -291,6 +348,8 @@ def test_health_report(tmp_path, monkeypatch):
     monkeypatch.setattr(zorcam_config, "load_cameras", lambda path=None: cams)
     status = {"front": tmp_path / "front.json", "yard": tmp_path / "missing.json"}
     monkeypatch.setattr(zorcam_config, "capture_status_file", lambda cam_id: str(status[cam_id]))
+    net = {"via": "wifi", "wifi": True, "bluetooth": False}
+    monkeypatch.setattr(zorcam_config, "network_state", lambda *a, **k: net)
     now = time.time()
     status["front"].write_text(json.dumps({"last_frame": now - 4, "reconnects": [now - 90000, now - 60, now - 30]}))
     cg = tmp_path / "cg" / "zorcam-nvr-capture.service"
@@ -306,16 +365,18 @@ def test_health_report(tmp_path, monkeypatch):
                             {"id": "yard", "frame_age": None, "reconnects": 0}]
     assert r["checks"]["frames:yard"] == {"ok": False, "text": "no frames yet"} and "Secret name" not in json.dumps(r)
     assert "disk" in r and "mem" in r  # from this machine
+    assert r["network"] == net  # how it is connected and the radios: no network name, addresses or interface names
 
 
-def test_the_cloud_admin_asks_for_the_health_now(server):  # noqa: F811
+def test_the_cloud_admin_asks_for_the_health_now(server, tunnel):  # noqa: F811
     pair_locally()
     try:
-        status, _, body = request(server, "GET", "/cloud/v1/health",
+        status, _, body = request(tunnel, "GET", "/cloud/v1/health",
                                   headers={"X-Zorcam-Identity": identity("dev1234567", "admin")})
         report = json.loads(body)
         assert status == 200 and report["version"] and report["edition"] == "community" and report["ts"]
-        assert request(server, "GET", "/cloud/v1/health",
+        assert set(report["network"]) == {"via", "wifi", "bluetooth"}
+        assert request(tunnel, "GET", "/cloud/v1/health",
                        headers={"X-Zorcam-Identity": identity("dev1234567", "bob")})[0] == 403
     finally:
         zorcam_cloud.remove()
@@ -355,7 +416,7 @@ def test_a_motion_event_is_sent_again_while_the_cloud_is_away(monkeypatch):
     assert slept == [5, 30, 120] and len(sent) == 4
 
 
-def test_turn_servers_of_the_cloud_reach_the_live_page(server, cookies):  # noqa: F811
+def test_turn_servers_of_the_cloud_reach_the_live_page(server, tunnel, cookies):  # noqa: F811
     """Through the cloud the page gets its TURN servers (X-Zorcam-Ice) for RTCPeerConnection; at home, a forged
     header or a strange value gives none."""
     import app
@@ -368,7 +429,7 @@ def test_turn_servers_of_the_cloud_reach_the_live_page(server, cookies):  # noqa
         assert app.cloud_ice(bad) == [], bad
     pair_locally()
     try:
-        status, _, body = request(server, "GET", "/?tab=live", headers={
+        status, _, body = request(tunnel, "GET", "/?tab=live", headers={
             "X-Zorcam-Identity": identity("dev1234567", "admin"), "X-Zorcam-Ice": json.dumps(turn)})
         assert status == 200 and json.loads(re.search(r"window\.PAGE = (.*);", body).group(1))["iceServers"] == turn
         assert "new RTCPeerConnection({ iceServers: ICE_SERVERS })" in assets(server, body)
@@ -410,7 +471,7 @@ def app_tz():
     return app.pi_timezone()
 
 
-def test_timelapse_is_for_viewers_and_their_cameras(server, cookies, frames_dir):  # noqa: F811
+def test_timelapse_is_for_viewers_and_their_cameras(server, tunnel, cookies, frames_dir):  # noqa: F811
     pair_locally()
     try:
         via = lambda user: {"X-Zorcam-Identity": identity("dev1234567", user)}  # noqa: E731
@@ -418,22 +479,22 @@ def test_timelapse_is_for_viewers_and_their_cameras(server, cookies, frames_dir)
         # at home and through the cloud alike: the snapshot rules; the live-only user has no snapshots
         assert request(server, "GET", url + "hour")[0] == 302  # not signed in
         assert request(server, "GET", url + "hour", cookie=cookies["guest"])[0] == 403
-        assert request(server, "GET", url + "hour", headers=via("guest"))[0] == 403
+        assert request(tunnel, "GET", url + "hour", headers=via("guest"))[0] == 403
         for user in ("bob", "admin"):
-            for kwargs in ({"cookie": cookies[user]}, {"headers": via(user)}):
-                status, headers, _ = request(server, "GET", url + "hour", **kwargs)
+            for port, kwargs in ((server, {"cookie": cookies[user]}), (tunnel, {"headers": via(user)})):
+                status, headers, _ = request(port, "GET", url + "hour", **kwargs)
                 assert status == 200 and headers["Content-Type"] == "application/json", user
                 assert headers["Cache-Control"] == "no-store"
-        assert request(server, "GET", "/timelapse/nope?period=hour", headers=via("bob"))[0] == 404
+        assert request(tunnel, "GET", "/timelapse/nope?period=hour", headers=via("bob"))[0] == 404
         for gone in ("month", "day", "week"):  # the periods 24 h and Week are removed: unknown like any other
-            assert request(server, "GET", url + gone, headers=via("bob"))[0] == 400, gone
-        assert request(server, "GET", "/timelapse/front", headers=via("bob"))[0] == 400
+            assert request(tunnel, "GET", url + gone, headers=via("bob"))[0] == 400, gone
+        assert request(tunnel, "GET", "/timelapse/front", headers=via("bob"))[0] == 400
         # a camera that is not switched on for the user is closed, as everywhere
         zorcam_users.set_cameras("bob", {"yard"})
         try:
-            assert request(server, "GET", url + "hour", headers=via("bob"))[0] == 404
+            assert request(tunnel, "GET", url + "hour", headers=via("bob"))[0] == 404
             assert request(server, "GET", url + "hour", cookie=cookies["bob"])[0] == 404
-            assert request(server, "GET", url + "hour", headers=via("admin"))[0] == 200
+            assert request(tunnel, "GET", url + "hour", headers=via("admin"))[0] == 200
         finally:
             zorcam_users.set_cameras("bob", {"front", "yard"})
     finally:
@@ -450,7 +511,7 @@ def test_timelapse_reply_has_every_frame_as_a_name(server, cookies, frames_dir):
         assert status == 200 and "Content-Encoding" not in headers and int(headers["Content-Length"]) == len(body.encode())
         return json.loads(body)
     hour = get("hour")
-    assert set(hour) == {"camera", "period", "base", "full", "tz", "frames", "videos", "clip"}  # no per-frame objects, no total
+    assert set(hour) == {"camera", "period", "base", "full", "tz", "frames", "now", "videos", "clip"}
     assert hour["camera"] == "front" and hour["period"] == "hour" and hour["base"] == "/thumb/front/"
     assert hour["full"] == "/img/front/"
     assert hour["tz"] == {k: app_tz()[k] for k in ("abbr", "offset", "label")}  # the Pi's zone of these times
@@ -518,13 +579,13 @@ def test_timelapse_cache_keeps_bytes_and_is_bounded(frames_dir, monkeypatch):
         False, False, True, True, False, False, False]
 
 
-def test_timelapse_player_on_the_page(server):  # noqa: F811
+def test_timelapse_player_on_the_page(server, tunnel):  # noqa: F811
     """The Timelapse tab has the player: canvas, slider with the strip of motion, day
     and hour marks, speeds; no hint and no reload of the page every minute under it."""
     pair_locally()
     try:
         for lang, cookie_lang in (("en", ""), ("ru", "zorcam_lang=ru")):
-            status, _, body = request(server, "GET", "/?tab=all&cam=front&mode=grid&horizon=60",
+            status, _, body = request(tunnel, "GET", "/?tab=all&cam=front&mode=grid&horizon=60",
                                       headers={"X-Zorcam-Identity": identity("dev1234567", "bob"), "Cookie": cookie_lang})
             assert status == 200 and "[[" not in body
             panel = body[body.index('data-panel="all"'):body.index("<script")]
@@ -546,8 +607,11 @@ def test_timelapse_player_on_the_page(server):  # noqa: F811
             # the calendar of days under the player: hidden until the list arrives, buttons built by the script
             assert 'class="tl-cal" hidden' in panel and 'class="tl-days"' in panel and panel.count("tl-calnav") == 2
             assert t(lang, "tl.days") in panel and t(lang, "tl.keys") in panel and "[ " in t(lang, "tl.keys")
-            assert "?days=1" in js and "'?day=' + d" in js and "zorcam_tl_day" in js and "BracketLeft" in js
-            for key in ("tl.day_frames", "tl.day_clips", "tl.day_none", "tl.day_no_clips"):
+            assert "?days=1" in js and "'?day=' + d" in js and "zorcam_tl_day" not in js and "BracketLeft" in js
+            # a pause in the recording is walked on a grey screen, not jumped; the newest day with snapshots opens
+            assert "function showGap" in js and "gapAt(v)" in js and "it.frames > 0" in js
+            assert "removeAttribute('poster')" in js  # the clip over the timelapse plays at once
+            for key in ("tl.day_frames", "tl.day_clips", "tl.day_none", "tl.day_no_clips", "tl.no_frames"):
                 assert json.dumps(t(lang, key), ensure_ascii=False) in body, key  # window.T
             assert "'<i class=\"tm'" in js and "'<i class=\"vd'" in js and "TIMELAPSE" in js  # two fixed slots
     finally:
@@ -637,7 +701,7 @@ def test_timelapse_days_are_capped_and_cheap(frames_dir, monkeypatch):
                                                  "today": now.date().isoformat()}
 
 
-def test_timelapse_day_queries_have_the_same_access(server, cookies, frames_dir):  # noqa: F811
+def test_timelapse_day_queries_have_the_same_access(server, tunnel, cookies, frames_dir):  # noqa: F811
     pair_locally()
     try:
         via = lambda user: {"X-Zorcam-Identity": identity("dev1234567", user)}  # noqa: E731
@@ -645,16 +709,127 @@ def test_timelapse_day_queries_have_the_same_access(server, cookies, frames_dir)
             url = "/timelapse/front?" + query
             assert request(server, "GET", url)[0] == 302
             assert request(server, "GET", url, cookie=cookies["guest"])[0] == 403
-            assert request(server, "GET", url, headers=via("guest"))[0] == 403
+            assert request(tunnel, "GET", url, headers=via("guest"))[0] == 403
             for user in ("bob", "admin"):
                 assert request(server, "GET", url, cookie=cookies[user])[0] == 200
-                assert request(server, "GET", url, headers=via(user))[0] == 200
-            assert request(server, "GET", "/timelapse/nope?" + query, headers=via("bob"))[0] == 404
+                assert request(tunnel, "GET", url, headers=via(user))[0] == 200
+            assert request(tunnel, "GET", "/timelapse/nope?" + query, headers=via("bob"))[0] == 404
             zorcam_users.set_cameras("bob", {"yard"})
             try:
-                assert request(server, "GET", url, headers=via("bob"))[0] == 404
-                assert request(server, "GET", url, headers=via("admin"))[0] == 200
+                assert request(tunnel, "GET", url, headers=via("bob"))[0] == 404
+                assert request(tunnel, "GET", url, headers=via("admin"))[0] == 200
             finally:
                 zorcam_users.set_cameras("bob", {"front", "yard"})
     finally:
         zorcam_cloud.remove()
+
+
+def test_the_owner_name_comes_with_the_pairing_and_follows_the_cloud(fake_cloud, monkeypatch):
+    """GET /api/device/status gives owner_name (the account's display name): kept at pairing, renewed by the heartbeat
+    when it changes; an older cloud without it leaves nothing (no empty value)."""
+    monkeypatch.setattr(zorcam_cloud, "URL_RE", re.compile(r"https?://.+"))
+    assert zorcam_cloud.start_pairing(fake_cloud, "pi", "2.6.0")[0]
+    FakeCloud.paired = True
+    assert zorcam_cloud.finish_pairing("2.6.0") == "paired"
+    assert zorcam_cloud.load()["owner_name"] == "Anna K." and zorcam_cloud.load()["name"] == "Dacha"
+    FakeCloud.owner = "Anna Kuznetsova"
+    assert zorcam_cloud.heartbeat()
+    assert zorcam_cloud.load()["owner_name"] == "Anna Kuznetsova" and zorcam_cloud.load()["name"] == "Dacha"
+    FakeCloud.owner = None  # the cloud stops sending it: the last known name stays, nothing breaks
+    assert zorcam_cloud.heartbeat() and zorcam_cloud.load()["owner_name"] == "Anna Kuznetsova"
+    FakeCloud.owner = 5  # not a text
+    assert zorcam_cloud.heartbeat() and zorcam_cloud.load()["owner_name"] == "Anna Kuznetsova"
+
+
+def test_the_device_address_follows_the_cloud(fake_cloud, monkeypatch, capsys):
+    """The cloud moved the devices to <id>.devices.<domain>: the heartbeat renews url/app_url (the Yandex skill address
+    follows) and the tunnel settings, logs it; a bad value is not saved, a missing field does not erase the old one."""
+    monkeypatch.setattr(zorcam_cloud, "URL_RE", re.compile(r"https?://[a-z0-9.:/-]+"))  # http: the fake cloud
+    assert zorcam_cloud.start_pairing(fake_cloud, "pi", "2.6.0")[0]
+    FakeCloud.paired = True
+    FakeCloud.address = {"stun": "turn.zorcam.test:3478"}
+    assert zorcam_cloud.finish_pairing("2.6.0") == "paired"
+    assert zorcam_cloud.load()["stun"] == "turn.zorcam.test:3478"  # pairing copies it with the other addresses
+    zorcam_cloud.save({**zorcam_cloud.load(), "stun": None})  # an old cloud sends none: nothing is left over
+    FakeCloud.address = {}
+    assert app.yandex_cloud_url() == "https://dev1234567.zorcam.test"
+    capsys.readouterr()
+    assert zorcam_cloud.heartbeat() and "address" not in capsys.readouterr().out  # nothing changed: no log line
+    good = {"url": "https://dev1234567.devices.zorcam.test", "app_url": "https://cloud2.zorcam.test",
+            "frps_addr": "tunnel2.zorcam.test", "frps_port": 8443, "subdomain": "dev7654321",
+            "stun": "turn.zorcam.test:3478"}
+    FakeCloud.address = good
+    assert zorcam_cloud.heartbeat()
+    data = zorcam_cloud.load()
+    assert (data["url"], data["app_url"]) == ("https://dev1234567.devices.zorcam.test", "https://cloud2.zorcam.test")
+    assert (data["frps_addr"], data["frps_port"], data["subdomain"]) == ("tunnel2.zorcam.test", 8443, "dev7654321")
+    assert data["token"] == "tunnel-token" and data["name"] == "Dacha" and data["stun"] == "turn.zorcam.test:3478"
+    assert app.yandex_cloud_url() == "https://dev1234567.devices.zorcam.test"
+    assert "tunnel2.zorcam.test" in zorcam_cloud.frpc_config(data)  # the daemon sees the new config and restarts frpc
+    assert "the address from the cloud changed" in capsys.readouterr().out
+    # a bad or missing value changes nothing
+    for bad in ({"url": "javascript:alert(1)", "app_url": "ftp://x"}, {"url": 5, "app_url": ["https://a.test"]},
+                {"url": "", "frps_addr": "tunnel.test\"\nx = 1", "frps_port": "443", "subdomain": 7},
+                {"frps_port": True}, {"frps_port": 70000},
+                {"stun": "turn.zorcam.test"}, {"stun": "turn.zorcam.test:0"}, {"stun": "turn.zorcam.test:70000"},
+                {"stun": "Turn.x:3478"}, {"stun": "a\nb:3478"}, {"stun": 3478}, {"stun": None},
+                {"url": None, "app_url": None, "frps_addr": None, "frps_port": None, "subdomain": None}):
+        FakeCloud.address = {**good, **bad}
+        assert zorcam_cloud.heartbeat()
+        assert zorcam_cloud.load() == data, bad
+    assert app.yandex_cloud_url() == "https://dev1234567.devices.zorcam.test"
+
+
+def test_cloud_section_shows_the_owner(server, cookies):  # noqa: F811
+    """Settings -> General -> the cloud: the "Owner" row with the name on the right, only when the cloud sent it."""
+    def section():
+        return request(server, "GET", "/settings", cookie=cookies["admin"] + "; zorcam_lang=ru")[2]
+    pair_locally()
+    try:
+        assert t("ru", "cloud.owner") not in section()  # an older cloud: no row
+        with zorcam_cloud.locked():
+            data = zorcam_cloud.load()
+            data["owner_name"] = "Anna <b>K.</b>"
+            zorcam_cloud.save(data)
+        page = section()
+        assert (f'<div class="row"><div class="k">{t("ru", "cloud.owner")}</div>'
+                '<div class="v">Anna &lt;b&gt;K.&lt;/b&gt;</div></div>') in page
+        assert "Owner" not in request(server, "GET", "/settings", cookie=cookies["admin"] + "; zorcam_lang=ru")[2]
+        assert f'<div class="k">{t("en", "cloud.owner")}</div>' in request(server, "GET", "/settings",
+                                                                        cookie=cookies["admin"])[2]
+    finally:
+        zorcam_cloud.remove()
+
+
+def test_sign_out_on_other_devices_through_the_cloud(server, tunnel):  # noqa: F811
+    """Pressed through the cloud: the user's cloud session (one for all his cloud clients) stays and so does it
+    working, the sessions at home end. Pressed at home: the home session stays, the cloud one is dropped (the next
+    request through the cloud signs in again by the cloud's identity)."""
+    import app
+    from urllib.parse import urlencode
+    from test_gallery import csrf_of_session
+    pair_locally()
+    via = {"X-Zorcam-Identity": identity("dev1234567", "bob")}
+    try:
+        home = [login(server, "bob"), login(server, "bob")]
+        status, headers, _ = request(tunnel, "GET", "/settings?tab=users", headers=via)
+        assert status == 200
+        cloud = headers["Set-Cookie"].split(";")[0]
+        shared = app._cloud_sessions["bob"]
+        csrf = csrf_of_session(cloud)
+        status, headers, _ = request(tunnel, "POST", "/sessions/others", urlencode({"csrf": csrf}), cookie=cloud, headers=via)
+        assert status == 303
+        assert [request(server, "GET", "/settings", cookie=c)[0] for c in home] == [302, 302]
+        assert app._cloud_sessions["bob"] == shared and app.check_session(shared)[0] == "bob"
+        assert request(tunnel, "GET", "/settings", headers=via)[0] == 200
+        assert request(tunnel, "GET", "/settings", cookie=cloud, headers=via)[0] == 200
+        # at home
+        here = login(server, "bob")
+        status, _, _ = request(server, "POST", "/sessions/others", urlencode({"csrf": csrf_of_session(here)}), cookie=here)
+        assert status == 303 and "bob" not in app._cloud_sessions and app.check_session(shared)[0] is None
+        assert request(server, "GET", "/settings", cookie=here)[0] == 200
+        status, headers, _ = request(tunnel, "GET", "/settings", headers=via)  # the cloud signs in again, nothing breaks
+        assert status == 200 and app._cloud_sessions["bob"] != shared
+    finally:
+        zorcam_cloud.remove()
+        app._cloud_sessions.pop("bob", None)

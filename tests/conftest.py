@@ -9,7 +9,8 @@ os.makedirs(os.path.join(HOME, "config"))
 os.environ["HOME"] = HOME
 os.environ["ZORCAM_STATE_DIR"] = HOME
 os.environ["ZORCAM_STORAGE_DIR"] = os.path.join(HOME, "storage-root")  # the recordings disk service (root)
-for var in ("INVOCATION_ID", "NOTIFY_SOCKET", "ZORCAM_CONFIG", "ZORCAM_SECRETS", "ZORCAM_USERS", "ZORCAM_CAMERAS"):
+for var in ("INVOCATION_ID", "NOTIFY_SOCKET", "ZORCAM_CONFIG", "ZORCAM_SECRETS", "ZORCAM_USERS", "ZORCAM_CAMERAS",
+            "ZORCAM_BRAND_DIR"):
     os.environ.pop(var, None)  # runners under systemd have INVOCATION_ID: the gallery would try to restart itself
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,6 +24,17 @@ import zorcam_config  # noqa: E402
 SHM = os.path.join(HOME, "shm")
 os.makedirs(SHM)
 zorcam_config.capture_status_file = lambda cam_id: os.path.join(SHM, f"zorcam_capture_{cam_id}.json")
+
+import onvif  # noqa: E402
+import pytest  # noqa: E402
+
+REAL_LOCAL_HOST = onvif.local_host  # loopback is not a home-network camera; the fake cameras of the tests live there
+
+
+@pytest.fixture(autouse=True)
+def fake_cameras_on_loopback(monkeypatch):
+    monkeypatch.setattr(onvif, "local_host", lambda host: REAL_LOCAL_HOST(host) or host.startswith("127.") or host == "::1")
+
 
 # a fake ONVIF camera (tests/test_onvif.py) for the gallery tests too
 from test_onvif import fake_camera, ptz_camera  # noqa: E402,F401

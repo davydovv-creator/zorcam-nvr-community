@@ -1,4 +1,5 @@
 import json
+import glob
 import os
 import pathlib
 import re
@@ -72,8 +73,6 @@ def test_values_errors_and_duplicate_sections(conf):
     ("gallery", "videos_per_page", "10", 10),
     ("gallery", "videos_per_page", "45", None),
     ("gallery", "videos_per_page", "x", None),
-    ("notifications", "health", "no", False),
-    ("notifications", "health", "maybe", None),
     ("capture", "stall_timeout", "-1", None),
     ("language", "language", "ru", "ru"),
     ("language", "language", "de", None),
@@ -431,6 +430,18 @@ def test_services_run_as_their_own_user():
         assert "/home/" not in text and "/opt/zorcam-nvr/" in text, unit
 
 
+def test_services_have_no_device_files():
+    """PrivateDevices: a process of the service sees only /dev/null, /dev/urandom and the like (and /dev/shm), no disks.
+    Not zorcam-nvr-storage: it is root and works with the disks."""
+    for unit in ("capture/zorcam-nvr-capture.service", "gallery/zorcam-nvr-gallery.service",
+                 "go2rtc/zorcam-nvr-go2rtc.service", "cloud/zorcam-nvr-cloud.service"):
+        with open(os.path.join(REPO, "app", unit), encoding="utf-8") as f:
+            assert "\nPrivateDevices=yes\n" in f.read(), unit
+    for unit in glob.glob(os.path.join(REPO, "app", "storage", "*.service")):
+        with open(unit, encoding="utf-8") as f:
+            assert "PrivateDevices" not in f.read(), unit
+
+
 def test_edition(tmp_path):
     """box only on the Zorcam Box image (a file next to the program, read-only for the services), community otherwise."""
     assert zorcam_config.edition(str(tmp_path / "missing")) == "community"
@@ -517,3 +528,343 @@ def test_motion_zones_broken_entries_mean_no_zones(tmp_path):
 def test_zone_cell_order_is_row_by_row():
     assert zorcam_config.valid_zone("exclude", "0" * 144) and not zorcam_config.valid_zone("exclude", "0" * 145)
     assert (zorcam_config.ZONE_COLS, zorcam_config.ZONE_ROWS) == (16, 9)
+
+
+def test_internal_token_is_created_once_and_private(tmp_path):
+    """The detector's secret for /internal/motion: created by the gallery (create=True), 600, never replaced while it is
+    there; the detector only reads it (None when the gallery has not made it yet)."""
+    path = str(tmp_path / "config" / "internal_token")
+    assert zorcam_config.internal_token(path=path) is None and not os.path.exists(path)
+    token = zorcam_config.internal_token(create=True, path=path)
+    assert re.fullmatch(r"[0-9a-f]{64}", token)
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert zorcam_config.internal_token(path=path) == token
+    assert zorcam_config.internal_token(create=True, path=path) == token  # the next start keeps it
+    assert os.listdir(os.path.dirname(path)) == ["internal_token"]  # no temporary files left
+    with open(path, "w") as f:  # an empty file is no secret
+        f.write("\n")
+    again = zorcam_config.internal_token(create=True, path=path)
+    assert re.fullmatch(r"[0-9a-f]{64}", again) and again != token
+
+
+def test_services_are_hardened():
+    """Units of the capture, gallery, go2rtc and cloud services: no kernel settings, modules, logs or cgroups to change,
+    no new SUID, realtime, namespaces or foreign system call architectures, only the address families they use, no
+    capabilities (the gallery keeps the one for port 80), files private to the group (umask 027). Not
+    zorcam-nvr-storage: it is root and formats and mounts disks."""
+    common = ["UMask=0027", "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
+              "ProtectControlGroups=yes", "RestrictSUIDSGID=yes", "LockPersonality=yes", "RestrictRealtime=yes",
+              "RestrictNamespaces=yes", "SystemCallArchitectures=native",
+              "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
+    for unit in ("capture/zorcam-nvr-capture.service", "gallery/zorcam-nvr-gallery.service",
+                 "go2rtc/zorcam-nvr-go2rtc.service", "cloud/zorcam-nvr-cloud.service"):
+        with open(os.path.join(REPO, "app", unit), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for want in common:
+            assert want in lines, (unit, want)
+        caps = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE" if "gallery" in unit else "CapabilityBoundingSet="
+        assert caps in lines, unit
+    for unit in glob.glob(os.path.join(REPO, "app", "storage", "*.service")):
+        with open(unit, encoding="utf-8") as f:
+            text = f.read()
+        assert "RestrictAddressFamilies" not in text and "CapabilityBoundingSet" not in text, unit
+
+
+def test_the_tunnel_has_its_own_port_in_the_gallery_and_frpc():
+    """frpc connects to the gallery's tunnel port, never to port 80 (the home network and any reverse proxy)."""
+    import zorcam_cloud
+    assert zorcam_cloud.TUNNEL_PORT not in (80, 8555, 1984, 8554)
+    conf = zorcam_cloud.frpc_config({"frps_addr": "c.example.org", "device_id": "dev1", "token": "t", "subdomain": "dev1"})
+    assert f"localPort = {zorcam_cloud.TUNNEL_PORT}\n" in conf and 'localIP = "127.0.0.1"' in conf
+    with open(os.path.join(REPO, "app", "install.sh"), encoding="utf-8") as f:
+        install = f.read()
+    # an update that moves the tunnel restarts the cloud service, which writes the new frpc settings and starts frpc
+    assert re.search(r'copy "\$SRC/common/zorcam_cloud\.py"\s+"\$PREFIX/cloud/zorcam_cloud\.py"\s+644 && RESTART_CLOUD=1',
+                     install)
+    assert f"127\\.0\\.0\\.1:{zorcam_cloud.TUNNEL_PORT} " in install  # the check at the end of the installation
+
+
+def test_stun_servers_parameter(conf):
+    """[live] stun_servers: host[:port] separated by commas, empty by default (the built-in order)."""
+    assert zorcam_config.load().get("live", "stun_servers") == ""
+    for raw, ok in (("", True), ("stun.example.org", True), ("stun.example.org:19302", True), ("192.0.2.7:3478", True),
+                    ("a.example, b.example:1", True), ("a.example:65535", True),
+                    ("a.example:0", False), ("a.example:65536", False), ("a.example:", False), ("a.example,", False),
+                    ("stun://a.example", False), ("a b", False), ("-a.example", False), ("a.example:12x", False)):
+        assert (zorcam_config.validate("live", "stun_servers", raw)[1] is None) == ok, raw
+    assert i18n.PARAM_RU[("live", "stun_servers")]
+    assert "# stun_servers =\n" in zorcam_config.example()
+
+
+def test_trusted_proxies_parameter(conf):
+    """[gallery] trusted_proxies: IP addresses separated by commas, empty by default (nobody is trusted)."""
+    assert zorcam_config.load().get("gallery", "trusted_proxies") == ""
+    for raw, ok in (("", True), ("127.0.0.1", True), ("127.0.0.1, 10.0.0.2", True), ("::1,fe80::1", True),
+                    ("nginx", False), ("127.0.0.1; evil", False), ("127.0.0.1,", False)):
+        assert (zorcam_config.validate("gallery", "trusted_proxies", raw)[1] is None) == ok, raw
+    assert i18n.PARAM_RU[("gallery", "trusted_proxies")]
+    assert "# trusted_proxies =\n" in zorcam_config.example()  # no trailing space in the example
+
+
+ROUTE_HEAD = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+
+
+def route(iface, metric=100, dest="00000000", mask="00000000", flags="0003"):
+    return f"{iface}\t{dest}\t0102A8C0\t{flags}\t0\t0\t{metric}\t{mask}\t0\t0\t0\n"
+
+
+def fake_net(tmp_path, routes=None, ipv6=None, ifaces=None, rfkill=(), bluetooth=()):
+    """A fake /proc and /sys in tmp_path. ifaces: {name: "wired" | "wifi" | "wext" | "virtual"} (a wired one has device/,
+    a wifi one phy80211, a "wext" one wireless/); rfkill: [(type, soft, hard)]; bluetooth: names in /sys/class/bluetooth."""
+    proc, sysfs = tmp_path / "proc", tmp_path / "sys"
+    (proc / "net").mkdir(parents=True)
+    if routes is not None:
+        (proc / "net" / "route").write_text(ROUTE_HEAD + "".join(routes))
+    if ipv6 is not None:
+        (proc / "net" / "ipv6_route").write_text("".join(ipv6))
+    for name, kind in (ifaces or {}).items():
+        base = sysfs / "class" / "net" / name
+        base.mkdir(parents=True)
+        if kind == "wifi":
+            (base / "phy80211").mkdir()
+        elif kind == "wext":
+            (base / "wireless").mkdir()
+        if kind in ("wired", "wifi", "wext"):
+            (base / "device").mkdir()
+    for i, (kind, soft, hard) in enumerate(rfkill):
+        base = sysfs / "class" / "rfkill" / f"rfkill{i}"
+        base.mkdir(parents=True)
+        (base / "type").write_text(kind + "\n")
+        (base / "soft").write_text(f"{soft}\n")
+        (base / "hard").write_text(f"{hard}\n")
+    for name in bluetooth:
+        (sysfs / "class" / "bluetooth" / name).mkdir(parents=True)
+    return str(proc), str(sysfs)
+
+
+def state(tmp_path, **kw):
+    return zorcam_config.network_state(*fake_net(tmp_path, **kw))
+
+
+def test_network_state_on_a_cable_with_the_radios_off(tmp_path):
+    assert state(tmp_path, routes=[route("eth0")], ifaces={"eth0": "wired", "lo": "virtual"}) == \
+        {"via": "ethernet", "wifi": False, "bluetooth": False}
+
+
+def test_network_state_on_wifi(tmp_path):
+    """The default route through a wireless interface (found by phy80211, or by wireless/ on older drivers)."""
+    for kind in ("wifi", "wext"):
+        assert state(tmp_path / kind, routes=[route("wlan0")], ifaces={"wlan0": kind}) == \
+            {"via": "wifi", "wifi": True, "bluetooth": False}
+
+
+def test_network_state_cable_with_the_radios_on(tmp_path):
+    """A cable, but wlan0 has no route: Wi-Fi is on; hci0 - Bluetooth is on; hci0:256 (a connection) is not an adapter."""
+    ifaces = {"eth0": "wired", "wlan0": "wifi"}
+    assert state(tmp_path / "a", routes=[route("eth0")], ifaces=ifaces) == {"via": "ethernet", "wifi": True, "bluetooth": False}
+    assert state(tmp_path / "b", routes=[route("eth0")], ifaces={"eth0": "wired"}, bluetooth=["hci0"]) == \
+        {"via": "ethernet", "wifi": False, "bluetooth": True}
+    assert state(tmp_path / "c", routes=[route("eth0")], ifaces={"eth0": "wired"}, bluetooth=["hci0:256"])["bluetooth"] is False
+
+
+def test_network_state_radio_blocked_by_rfkill(tmp_path):
+    """A soft or hard block turns the radio off; only the blocks of its own type count; of several adapters one that
+    is not blocked is enough."""
+    base = {"routes": [route("eth0")], "ifaces": {"eth0": "wired", "wlan0": "wifi"}, "bluetooth": ["hci0"]}
+    on = state(tmp_path / "on", **base, rfkill=[("wlan", 0, 0), ("bluetooth", 0, 0)])
+    assert (on["wifi"], on["bluetooth"]) == (True, True)
+    soft = state(tmp_path / "soft", **base, rfkill=[("wlan", 1, 0), ("bluetooth", 1, 0)])
+    assert (soft["wifi"], soft["bluetooth"]) == (False, False)
+    hard = state(tmp_path / "hard", **base, rfkill=[("wlan", 0, 1), ("bluetooth", 0, 1)])
+    assert (hard["wifi"], hard["bluetooth"]) == (False, False)
+    mixed = state(tmp_path / "mixed", **base, rfkill=[("wlan", 1, 0), ("bluetooth", 0, 0)])  # Wi-Fi off, Bluetooth on
+    assert (mixed["wifi"], mixed["bluetooth"]) == (False, True)
+    two = state(tmp_path / "two", **{**base, "ifaces": {"eth0": "wired", "wlan0": "wifi", "wlan1": "wifi"}},
+                rfkill=[("wlan", 1, 0), ("wlan", 0, 0)])
+    assert two["wifi"] is True
+    unreadable = state(tmp_path / "bad", **base, rfkill=[("wlan", "?", "?")])  # not "1": not blocked
+    assert unreadable["wifi"] is True
+
+
+def test_network_state_without_modules_and_without_a_route(tmp_path):
+    """No radio modules (or off in the firmware: no interface at all) - both off; no default route - via None."""
+    assert state(tmp_path / "a", routes=[route("eth0")], ifaces={"eth0": "wired"}) == \
+        {"via": "ethernet", "wifi": False, "bluetooth": False}
+    assert state(tmp_path / "b", routes=[], ifaces={"eth0": "wired", "wlan0": "wifi"}) == \
+        {"via": None, "wifi": True, "bluetooth": False}
+    not_default = route("eth0", dest="0001A8C0", mask="00FFFFFF")  # a route to a network, not the default
+    assert state(tmp_path / "c", routes=[not_default], ifaces={"eth0": "wired"})["via"] is None
+
+
+def test_network_state_virtual_default_interface_is_unknown(tmp_path):
+    """A VPN, a tunnel or a bridge has no device: neither a cable nor Wi-Fi; an unknown interface name too."""
+    ifaces = {"eth0": "wired", "wg0": "virtual", "tun0": "virtual", "br0": "virtual"}
+    for name in ("wg0", "tun0", "br0", "ghost"):
+        assert state(tmp_path / name, routes=[route(name, 0), route("eth0", 100)], ifaces=ifaces)["via"] is None
+    for i, name in enumerate(("../net/eth0", "eth0/.", "..")):  # not an interface name: never a path to follow
+        assert state(tmp_path / f"path{i}", routes=[route(name)], ifaces=ifaces)["via"] is None
+
+
+def test_network_state_takes_the_route_with_the_lowest_metric(tmp_path):
+    ifaces = {"eth0": "wired", "wlan0": "wifi"}
+    assert state(tmp_path / "a", routes=[route("wlan0", 600), route("eth0", 100)], ifaces=ifaces)["via"] == "ethernet"
+    assert state(tmp_path / "b", routes=[route("eth0", 600), route("wlan0", 100)], ifaces=ifaces)["via"] == "wifi"
+    assert state(tmp_path / "c", routes=[route("eth0", 100), route("wlan0", 100)], ifaces=ifaces)["via"] == "ethernet"
+    # a route that is down, or only half of the address space (a VPN that splits the default), is not the default
+    down, half = route("wlan0", 1, flags="0002"), route("wlan0", 1, mask="80000000")
+    assert state(tmp_path / "d", routes=[down, route("eth0", 100)], ifaces=ifaces)["via"] == "ethernet"
+    assert state(tmp_path / "e", routes=[half, route("eth0", 100)], ifaces=ifaces)["via"] == "ethernet"
+
+
+def test_network_state_ipv6_default_route_when_ipv4_has_none(tmp_path):
+    def line(iface, metric, flags="00000003", dest="0" * 32, plen="00"):
+        return f"{dest} {plen} {'0' * 32} 00 fe800000000000000a0027fffe000001 {metric:08x} 00000001 00000000 {flags} {iface}\n"
+    ifaces = {"eth0": "wired", "wlan0": "wifi", "lo": "virtual"}
+    v6 = [line("lo", 0xFFFFFFFF, flags="00200200"), line("wlan0", 1024), line("eth0", 100),
+          line("eth0", 1, dest="2" + "0" * 31, plen="40")]  # the last one leads to a network, not everywhere
+    assert state(tmp_path / "a", routes=[], ipv6=v6, ifaces=ifaces)["via"] == "ethernet"
+    assert state(tmp_path / "b", routes=[], ipv6=[line("lo", 1, flags="00200203")], ifaces=ifaces)["via"] is None  # "unreachable"
+    assert state(tmp_path / "c", routes=[route("wlan0", 600)], ipv6=v6, ifaces=ifaces)["via"] == "wifi"  # IPv4 first
+    rejecting = [line("eth0", 1, flags="00000203"), line("wlan0", 1024)]  # a default that rejects is not a way out
+    assert state(tmp_path / "e", routes=[], ipv6=rejecting, ifaces=ifaces)["via"] == "wifi"
+    assert state(tmp_path / "d", routes=None, ipv6=v6[2:3], ifaces=ifaces)["via"] == "ethernet"  # no IPv4 file at all
+
+
+def test_network_state_broken_files_are_not_determined(tmp_path):
+    """Empty, short, binary or half-written files, missing folders: no exception, nothing to advise about."""
+    nothing = {"via": None, "wifi": False, "bluetooth": False}
+    assert zorcam_config.network_state(str(tmp_path / "no-proc"), str(tmp_path / "no-sys")) == nothing
+    garbage = [ROUTE_HEAD, "\n", "eth0\n", "eth0\t00000000\n", "\x00\xff\xfe garbage \x00\n",
+               "eth0\t00000000\tx\tzz\t0\t0\tq\t00000000\n", "eth0\t00000000\t0\t0003\t0\t0\t100\n"]
+    for i, text in enumerate(garbage):
+        proc, sysfs = fake_net(tmp_path / str(i), ifaces={"eth0": "wired"})
+        (pathlib.Path(proc) / "net" / "route").write_bytes(text.encode("utf-8", "surrogatepass"))
+        zeros = b"0" * 32
+        v6 = b"\xff\xfe\n0000\n" + zeros + b" 00\n" + zeros + b" 00 x 0 y zz q 3 eth0\n"
+        (pathlib.Path(proc) / "net" / "ipv6_route").write_bytes(v6)
+        assert zorcam_config.network_state(proc, sysfs) == nothing, repr(text)
+    proc, sysfs = fake_net(tmp_path / "files", ifaces={"eth0": "wired"}, rfkill=[("wlan", 0, 0)])
+    (pathlib.Path(sysfs) / "class" / "bluetooth").write_text("not a folder")
+    (pathlib.Path(sysfs) / "class" / "rfkill" / "rfkill0" / "soft").unlink()
+    assert zorcam_config.network_state(proc, sysfs) == nothing
+
+
+def test_network_state_of_this_machine_is_a_plain_dict():
+    """The real /proc and /sys: whatever this machine is, a dict of the three keys and no exception."""
+    result = zorcam_config.network_state()
+    assert set(result) == {"via", "wifi", "bluetooth"} and result["via"] in ("ethernet", "wifi", None)
+    assert isinstance(result["wifi"], bool) and isinstance(result["bluetooth"], bool)
+
+
+# ---------------------------------------------------------------- --preset: values proposed by the installer of a build
+
+def example_conf(tmp_path):
+    """zorcam.conf as install.sh creates it: a copy of config/zorcam.conf.example."""
+    path = tmp_path / "zorcam.conf"
+    path.write_text(zorcam_config.example(), encoding="utf-8")
+    return path
+
+
+def preset_cli(path, *items):
+    import subprocess
+    import sys
+    args = [a for item in items for a in ("--preset", item)]
+    env = {**os.environ, "ZORCAM_CONFIG": str(path)}
+    return subprocess.run([sys.executable, zorcam_config.__file__, *args], capture_output=True, text=True, env=env)
+
+
+def test_preset_sets_what_the_owner_has_not_set_and_keeps_the_rest_of_the_file(tmp_path):
+    path = example_conf(tmp_path)
+    before = path.read_text(encoding="utf-8").splitlines()
+    done = preset_cli(path, "language.language=ru", "gallery.environment=test")
+    assert done.returncode == 0 and done.stderr == ""
+    assert done.stdout.splitlines() == ["preset language.language = ru", "preset gallery.environment = test"]
+    after = path.read_text(encoding="utf-8").splitlines()
+    # only the two commented defaults became lines; every comment and description is where it was
+    assert [(a, b) for a, b in zip(before, after, strict=True) if a != b] == [
+        ("# language = auto", "language = ru"), ("# environment = prod", "environment = test")]
+    assert len(before) == len(after)
+    cfg = zorcam_config.load(str(path))
+    assert cfg.errors == [] and cfg.get("language", "language") == "ru" and cfg.get("gallery", "environment") == "test"
+    assert oct(path.stat().st_mode & 0o777) == "0o644"
+
+
+def test_preset_does_not_replace_what_the_owner_set(tmp_path):
+    path = tmp_path / "zorcam.conf"
+    # environment = prod is the default, but it is a line of the owner
+    owner = "# my notes\n[language]\nlanguage = en\n\n[gallery]\nenvironment = prod\nsession_days = 30\n"
+    path.write_text(owner, encoding="utf-8")
+    inode, mtime = path.stat().st_ino, path.stat().st_mtime_ns
+    done = preset_cli(path, "language.language=ru", "gallery.environment=test", "gallery.session_days=7")
+    assert done.returncode == 0
+    assert done.stdout.splitlines() == ["kept language.language = en (set by the owner)",
+                                        "kept gallery.environment = prod (set by the owner)",
+                                        "kept gallery.session_days = 30 (set by the owner)"]
+    # nothing changed: the file is not written at all (every write restarts go2rtc and the detector)
+    assert path.read_text(encoding="utf-8") == owner
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == (inode, mtime)
+
+
+def test_preset_mixes_kept_and_set_and_keeps_the_owners_lines(tmp_path):
+    path = tmp_path / "zorcam.conf"
+    path.write_text("# my notes\n\n[gallery]\nsession_days = 30\n# something of mine\n\n[language]\nlanguage = en\n",
+                    encoding="utf-8")
+    report = zorcam_config.apply_presets(["language.language=ru", "gallery.environment=stage", "capture.stall_timeout=20"],
+                                         str(path))
+    assert report == ["kept language.language = en (set by the owner)", "preset gallery.environment = stage",
+                      "preset capture.stall_timeout = 20"]
+    assert path.read_text(encoding="utf-8") == (
+        "# my notes\n\n[gallery]\nsession_days = 30\n# something of mine\nenvironment = stage\n\n[language]\nlanguage = en\n"
+        "\n[capture]\nstall_timeout = 20\n")  # in its section, before the blank line; a section that was missing is added
+    cfg = zorcam_config.load(str(path))
+    assert cfg.errors == [] and cfg.get("gallery", "environment") == "stage" and cfg.get("capture", "stall_timeout") == 20
+    assert cfg.get("language", "language") == "en" and cfg.get("gallery", "session_days") == 30
+
+
+def test_preset_of_the_default_value_needs_no_line_and_a_missing_file_is_made(tmp_path):
+    path = tmp_path / "config" / "zorcam.conf"
+    assert zorcam_config.apply_presets(["language.language=auto"], str(path)) == ["preset language.language = auto"]
+    assert not path.exists()  # nothing to write: the default is what it is
+    assert zorcam_config.apply_presets(["language.language=ru"], str(path)) == ["preset language.language = ru"]
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# Zorcam settings.") and "\nlanguage = ru\n" in text and "# language = auto" not in text
+    assert oct(path.stat().st_mode & 0o777) == "0o644"
+    assert zorcam_config.apply_presets(["language.language=ru"], str(path)) == [
+        "kept language.language = ru (set by the owner)"]  # the second run changes nothing
+
+
+@pytest.mark.parametrize("items,message", [
+    (["language.language=de"], "language.language = de: allowed: auto, en, ru"),
+    (["gallery.environment=prod2"], "gallery.environment = prod2: allowed: prod, stage, test"),
+    (["gallery.videos_per_page=7"], "gallery.videos_per_page = 7: allowed: 10, 30, 60"),
+    (["gallery.trusted_proxies=not an ip"], "gallery.trusted_proxies = not an ip: expected IP addresses separated by commas"),
+    (["capture.stall_timeout=soon"], "capture.stall_timeout = soon: expected a number"),
+    (["nothing.here=1"], "'nothing.here=1': expected SECTION.KEY=VALUE"),
+    (["language=ru"], "'language=ru': expected SECTION.KEY=VALUE"),
+    (["language.language"], "'language.language': expected SECTION.KEY=VALUE"),
+    (["language.language=ru", "language.language=en"], "language.language is given twice"),
+    (["gallery.environment=test", "language.language=de"], "language.language = de"),  # a good one first: still nothing written
+])
+def test_preset_refuses_a_wrong_item_and_writes_nothing(tmp_path, items, message):
+    path = example_conf(tmp_path)
+    before, mtime = path.read_text(encoding="utf-8"), path.stat().st_mtime_ns
+    done = preset_cli(path, *items)
+    assert done.returncode == 1 and done.stdout == "" and message in done.stderr and done.stderr.startswith("error: ")
+    assert path.read_text(encoding="utf-8") == before and path.stat().st_mtime_ns == mtime
+    with pytest.raises(ValueError, match="expected SECTION.KEY=VALUE|allowed|given twice|expected"):
+        zorcam_config.apply_presets(items, str(path))
+
+
+def test_preset_needs_a_value_and_a_readable_file(tmp_path):
+    path = example_conf(tmp_path)
+    import subprocess
+    import sys
+    done = subprocess.run([sys.executable, zorcam_config.__file__, "--preset"], capture_output=True, text=True,
+                          env={**os.environ, "ZORCAM_CONFIG": str(path)})
+    assert done.returncode == 1 and "--preset needs SECTION.KEY=VALUE" in done.stderr
+    path.write_bytes(b"\xff\xfe not text")
+    with pytest.raises(ValueError, match="cannot read"):
+        zorcam_config.apply_presets(["language.language=ru"], str(path))
+    path.write_text("[language\nlanguage = en\n", encoding="utf-8")  # not INI
+    with pytest.raises(ValueError, match="cannot read"):
+        zorcam_config.apply_presets(["language.language=ru"], str(path))

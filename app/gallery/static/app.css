@@ -5,7 +5,7 @@
 :root {
   color-scheme:light;
   --bg:#f3f3f1; --panel:#fff; --line:#d9d9d6; --text:#1c1c1c; --muted:#6e6e6a; --ok:#2f9e44; --bad:#d92d20; --warn:#9a6700;
-  --btn:#bdbdb8; --fill:#ebebe8; --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --btn:#bdbdb8; --fill:#ebebe8; --added:#3d5247; --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 * { box-sizing:border-box; -webkit-text-size-adjust:100%; -webkit-tap-highlight-color:transparent; }
 html, body { background:var(--bg); }
@@ -21,17 +21,22 @@ a { color:var(--text); text-decoration-thickness:1px; text-underline-offset:2px;
 .appname { display:inline-flex; align-items:center; position:relative; margin-right:auto; padding-left:4px; font:600 12px var(--mono); letter-spacing:0.12em; text-transform:uppercase; white-space:nowrap; }
 .modebtn {
   appearance:none; -webkit-appearance:none; border:none; background:transparent; color:var(--text); cursor:pointer;
-  width:44px; height:44px; margin:0 -8px; padding:0; line-height:0; display:inline-flex; align-items:center; justify-content:center;
+  width:44px; height:44px; margin:0 -8px 0 0; padding:0; line-height:0; display:inline-flex; align-items:center; justify-content:center;
 }
 .modetip {
   position:absolute; z-index:25; left:0; top:100%; width:max-content; max-width:220px; padding:8px 10px;
   background:var(--panel); border:1px solid var(--line); border-radius:2px;
   font:13px/1.35 var(--mono); letter-spacing:0; text-transform:none; white-space:normal; font-weight:400;
 }
+.modetip a { display:block; margin-top:6px; color:var(--text); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:2px; }
 .envbadge {
   display:inline-block; margin-left:8px; padding:1px 6px; border:1px solid #d4b26a; color:var(--warn);
   font:400 12px var(--mono); letter-spacing:0.04em; text-transform:uppercase; vertical-align:1px;
 }
+/* the mark of a build on top of the core (brand/logo.svg; no file, no element): before the name in the header and the
+   sidebar, above the sign-in form and the wizard; the theme.css of the build changes the sizes */
+.brandlogo { flex:none; width:auto; height:20px; margin-right:8px; }
+.loginlogo { display:block; width:auto; max-width:100%; height:72px; margin:0 auto 20px; }
 .clock { margin:0 6px; font:12px var(--mono); letter-spacing:0.04em; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .large { font-size:1.3rem; font-weight:600; line-height:1.2; margin:0; padding:10px 0 12px; }
 /* the motion frame over the picture of a clip (a card in Videos, the player) */
@@ -51,6 +56,8 @@ body.tabbed { padding-bottom:calc(60px + env(safe-area-inset-bottom)); }
 .tab svg { width:24px; height:24px; }
 .tab.active { color:var(--text); border-top-color:var(--text); }
 .tabbar .brand, .tabbar .who { display:none; }
+/* a field has focus on a phone: the keyboard is open (app.js; not on a wide screen, the sidebar stays) */
+html.kbd .tabbar { display:none; }
 /* from 1024 px (a laptop): the tab bar becomes the sidebar, the content gets its place on the right */
 @media (min-width: 1024px) {
   .appname, .clock { display:none; }

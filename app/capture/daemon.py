@@ -616,9 +616,13 @@ def stream_clip(start, end, out_path):
 
 def notify_gallery(name):
     try:
+        headers = {"Content-Type": "application/json"}
+        token = zorcam_config.internal_token()  # общий секрет с галереей: без него она не принимает сигнал
+        if token:
+            headers["X-Zorcam-Internal"] = token
         req = urllib.request.Request(
             GALLERY_MOTION_URL, data=json.dumps({"name": name, "camera": CAMERA_ID}).encode(),
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers=headers, method="POST",
         )
         urllib.request.urlopen(req, timeout=5).close()
     except Exception as e:

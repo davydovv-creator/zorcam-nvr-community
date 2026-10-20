@@ -48,3 +48,27 @@ def test_motion_without_link_is_not_sent(tmp_path):
     ya = make(tmp_path)  # keys saved, but Yandex has not linked yet
     ya.motion("front")
     assert ya.outbox.empty() and ya.state("front") == "not_detected"
+
+
+def test_episode_logic_is_shared_with_mqtt():
+    """One episode: the first signal opens it, every signal moves the end, HOLD seconds of quiet close it."""
+    import episodes
+    assert yandex.HOLD == episodes.HOLD == 60
+    ep = episodes.Episodes()
+    assert ep.signal("a", 100) is True and ep.signal("a", 130) is False and ep.signal("b", 140) is True
+    assert ep.next_end() == 190 and ep.is_active("a")
+    assert ep.tick(189) == [] and ep.tick(190) == ["a"] and not ep.is_active("a") and ep.next_end() == 200
+    assert ep.signal("a", 195, start=False) is False and not ep.is_active("a") and ep.last_motion["a"] == 195
+    ep.clear()
+    assert not ep.active and not ep.last_motion and ep.next_end() is None
+
+
+def test_configured_needs_the_skill_id_and_the_secret(tmp_path):
+    ya = yandex.Yandex(path=str(tmp_path / "yandex.json"))
+    assert not ya.configured()
+    ya.save_settings("skill", "", "tok")
+    assert not ya.configured()  # the secret is missing
+    ya.save_settings("skill", "sec")
+    assert ya.configured()
+    ya.save_settings("", "")  # the skill ID cleared
+    assert not ya.configured()

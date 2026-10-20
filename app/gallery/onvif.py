@@ -55,12 +55,13 @@ class OnvifError(Exception):
 
 
 def local_host(host):
-    """Только адреса домашней сети: галерея не должна стать способом обращаться к любым узлам."""
+    """Только адреса домашней сети: галерея не должна стать способом обращаться к любым узлам. Не сам Pi (127.0.0.1:
+    go2rtc, туннель облака и другие службы), не 0.0.0.0 и не групповые адреса — в Python у них is_private == True."""
     try:
         a = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return a.is_private or a.is_link_local
+    return (a.is_private or a.is_link_local) and not (a.is_loopback or a.is_unspecified or a.is_multicast)
 
 
 def _local(tag):
@@ -336,8 +337,8 @@ def camera_url(cam):
 
 
 def ptz_support(xaddr, user, password, timeout=3):
-    """Управление камерой: {"url", "token", "way"} — служба PTZ, профиль с PTZConfiguration и способ входа.
-    OnvifError("no_ptz"), если камера поворотной не бывает."""
+    """Управление камерой: {"url", "token", "way", "pan", "zoom"} — служба PTZ, профиль с PTZConfiguration, способ входа
+    и что камера умеет (поворот, зум). OnvifError("no_ptz"), если камера поворотной не бывает."""
     if not local_host(urlparse(xaddr).hostname or ""):
         raise OnvifError("address")
     _info, way, _offset = _sign_in(xaddr, user, password, timeout)
@@ -345,11 +346,29 @@ def ptz_support(xaddr, user, password, timeout=3):
     def call(url, body):
         return soap(url, body, user, password, way[0], timeout, way[1])
     root = call(_service(call, xaddr, "Media"), "<trt:GetProfiles/>")
-    token = next((p.get("token") for p in root.iter() if _local(p.tag) == "Profiles" and p.get("token")
-                  and _find(p, "PTZConfiguration") is not None), None)
-    if not token:
+    prof = next((p for p in root.iter() if _local(p.tag) == "Profiles" and p.get("token")
+                 and _find(p, "PTZConfiguration") is not None), None)
+    if prof is None:
         raise OnvifError("no_ptz")
-    return {"url": _service(call, xaddr, "PTZ"), "token": token, "way": way}
+    url = _service(call, xaddr, "PTZ")
+    # PTZConfiguration в профиле есть и у многих неповоротных камер (шаблон прошивки, цифровой зум): что камера умеет
+    # на самом деле — пространства движения её узла PTZ; GetNodes не ответил — как раньше, все кнопки
+    pan = zoom = True
+    try:
+        nodes = call(url, "<tptz:GetNodes/>")
+    except OnvifError as e:
+        if e.key == "auth":
+            raise
+    else:
+        node_token = _text(_find(prof, "PTZConfiguration"), "NodeToken")
+        node = next((n for n in nodes.iter() if _local(n.tag) == "PTZNode"
+                     and (not node_token or n.get("token") == node_token)), None)
+        if node is not None:
+            spaces = {_local(el.tag) for el in node.iter()}
+            pan, zoom = "ContinuousPanTiltVelocitySpace" in spaces, "ContinuousZoomVelocitySpace" in spaces
+            if not pan and not zoom:
+                raise OnvifError("no_ptz")
+    return {"url": url, "token": prof.get("token"), "way": way, "pan": pan, "zoom": zoom}
 
 
 def _escape(text):

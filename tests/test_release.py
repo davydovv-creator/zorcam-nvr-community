@@ -113,8 +113,11 @@ def test_community_snapshot_has_only_the_core(tmp_path, monkeypatch):
     names = {os.path.relpath(os.path.join(r, n), out) for r, ds, fs in os.walk(out) for n in ds + fs}
     for private in (".claude", "CLAUDE.md", "marketing", "legal", "docs", "tools"):
         assert private not in names, private
-    for public in ("LICENSE", "CLA.md", "CONTRIBUTING.md", "app/install.sh", ".github/workflows/ci.yml"):
+    for public in ("LICENSE", "CLA.md", "CONTRIBUTING.md", "SECURITY.md", "app/install.sh", ".github/workflows/ci.yml",
+                   "app/gallery/static/hls.min.js", "app/gallery/static/hls.LICENSE.txt"):
         assert public in names, public
+    with open(os.path.join(out, "SECURITY.md"), encoding="utf-8") as f:
+        assert "davydovv@gmail.com" in f.read()
     for readme in ("README.md", "README.ru.md"):
         with open(os.path.join(out, readme), encoding="utf-8") as f:
             text = f.read()
@@ -145,13 +148,51 @@ def test_install_checks_the_downloads(tmp_path):
     assert len(names) == 7
     good = tmp_path / "file"
     good.write_bytes(b"x")
-    script = "warn() { echo \"WARN $*\"; }\n" + funcs + "".join(
+    script = "warn() { echo \"WARN $*\"; }\ndie() { echo \"DIE $*\"; exit 1; }\n" + funcs + "".join(
         f'[ -n "$(known_sha256 {n})" ] || echo "MISSING {n}"\n' for n in names) + (
         f'check_sha256 {good} {names[0]} && echo "ACCEPTED"\n'
         f'check_sha256 {good} go2rtc-0.0.1-go2rtc_linux_arm64 && echo "UNKNOWN OK"\n')
-    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+    run = lambda env: subprocess.run(["bash", "-c", script], capture_output=True, text=True,  # noqa: E731
+                                     env={"PATH": os.environ["PATH"], **env})
+    out = run({}).stdout
     assert "MISSING" not in out and "ACCEPTED" not in out, out
-    assert "WARN no checksum of go2rtc-0.0.1" in out and "UNKNOWN OK" in out
+    # a version without a known checksum is refused: it would run as root unchecked
+    assert "DIE no checksum of go2rtc-0.0.1" in out and "UNKNOWN OK" not in out and "ZORCAM_ALLOW_UNVERIFIED=1" in out
+    # unless the owner says so explicitly
+    out = run({"ZORCAM_ALLOW_UNVERIFIED": "1"}).stdout
+    assert "WARN no checksum of go2rtc-0.0.1" in out and "UNKNOWN OK" in out and "DIE" not in out
+    out = run({"ZORCAM_ALLOW_UNVERIFIED": "0"}).stdout
+    assert "DIE no checksum" in out and "UNKNOWN OK" not in out
+
+
+def test_debug_save_is_private():
+    """The saved archive holds addresses and user names from the journal: umask 077 for the folder and the archive."""
+    with open(os.path.join(REPO, "app", "debug.sh"), encoding="utf-8") as f:
+        text = f.read()
+    save = text[text.index("save() {"):text.index("\n}\n", text.index("save() {"))]
+    assert "umask 077" in save and save.index("umask 077") < save.index("mktemp -d") and 'chmod 600 "$out"' in save
+
+
+def test_workflows_pin_actions_and_keep_the_secret_apart():
+    """Actions are pinned to a commit (a moved tag cannot change what runs); in the release workflow the token of the
+    public repository is only in the publishing job, the job that installs packages and runs the tests never has it."""
+    import glob
+    sha_use = re.compile(r"^\s*- uses: [\w./-]+@[0-9a-f]{40}  # v\d+\.\d+\.\d+$")
+    for path in glob.glob(os.path.join(REPO, ".github", "workflows", "*.yml")) + \
+            glob.glob(os.path.join(REPO, "community", ".github", "workflows", "*.yml")):
+        with open(path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if "uses:" in line:
+                    assert sha_use.match(line), f"{path}:{n}: {line.strip()}"
+    release = os.path.join(REPO, ".github", "workflows", "community.yml")
+    if not os.path.exists(release):  # the public repository has no release workflow
+        return
+    with open(release, encoding="utf-8") as f:
+        text = f.read()
+    check = text[text.index("\n  check:"):text.index("\n  publish:")]
+    publish = text[text.index("\n  publish:"):]
+    assert "COMMUNITY_TOKEN" not in check and "pip install" in check and "needs: check" in publish
+    assert "pip install" not in publish and "snapshot --release" in publish and "secrets.COMMUNITY_TOKEN" in publish
 
 
 def test_interface_texts_do_not_name_the_board():
@@ -163,6 +204,8 @@ def test_interface_texts_do_not_name_the_board():
     texts += [(k, v) for k, v in getattr(zorcam_i18n, "PARAM_RU", {}).items() if isinstance(v, str)]
     for path in glob.glob(os.path.join(REPO, "app", "gallery", "templates", "*")) + \
             glob.glob(os.path.join(REPO, "app", "gallery", "static", "*.js")):
+        if path.endswith("hls.min.js"):  # third-party minified code, not our interface (it has a variable Pi)
+            continue
         with open(path, encoding="utf-8") as f:
             code = re.sub(r"//.*|/\*.*?\*/", "", f.read(), flags=re.S)  # JS comments are not the interface
         texts.append((path, code))

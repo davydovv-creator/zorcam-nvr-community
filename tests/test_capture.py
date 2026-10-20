@@ -771,3 +771,35 @@ def test_zones_are_reread_only_when_the_file_changes(tmp_path, monkeypatch):
     path.write_text("broken")
     now[0] += daemon.ZONES_CHECK
     assert zones.get() is None
+
+
+def test_motion_signal_carries_the_shared_secret(monkeypatch):
+    """The gallery takes /internal/motion only with the secret from config/internal_token (read by the detector on each
+    signal: the gallery may create the file after the detector started)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import zorcam_config
+    seen = []
+
+    class Gallery(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            seen.append((self.path, self.headers.get("X-Zorcam-Internal"),
+                         json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Gallery)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(daemon, "GALLERY_MOTION_URL", f"http://127.0.0.1:{srv.server_address[1]}/internal/motion")
+    monkeypatch.setattr(daemon, "CAMERA_ID", "front")
+    try:
+        token = zorcam_config.internal_token(create=True)
+        assert token and len(token) == 64
+        daemon.notify_gallery("20260926_120000_000")
+        assert seen == [("/internal/motion", token, {"name": "20260926_120000_000", "camera": "front"})]
+    finally:
+        srv.shutdown()

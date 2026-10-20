@@ -115,17 +115,20 @@ PARAM_RU = {
     ("capture", "stall_timeout"): "Нет кадров от камеры дольше, с — переподключиться (не меньше трёх интервалов ключевых кадров)",
     ("capture", "rtsp_timeout"): "Таймаут сетевых операций RTSP в ffmpeg, с",
     ("live", "webrtc_fallback_seconds"): "Если WebRTC не соединился за столько секунд, плеер включает HLS",
+    ("live", "stun_servers"): "STUN-серверы через запятую (хост[:порт], порт по умолчанию 3478): по ним устройство узнаёт "
+                              "свой внешний адрес для Live из интернета. Если задано, спрашиваются только они. Пусто: "
+                              "подключённое облако, облако этого стенда, затем stun.l.google.com и stun.cloudflare.com",
     ("live", "hls_idle_timeout"): "HLS-поток останавливается, если плеер не запрашивает его столько секунд",
     ("notifications", "motion_cooldown"): "Уведомления о движении не чаще, чем раз в столько секунд",
-    ("notifications", "health"): "Push-уведомления о неисправностях и о восстановлении",
-    ("notifications", "health_repeat_minutes"): "Напоминать о неустранённой неисправности раз в столько минут "
-                                                "(0 — не напоминать)",
     ("health", "check_interval"): "Проверка состояния системы раз в столько секунд",
     ("health", "no_frames_seconds"): "Неисправность, если от камеры нет кадров дольше, с",
-    ("health", "min_free_disk_mb"): "Если свободного места меньше, МБ, самые старые записи удаляются (push администраторам)",
+    ("health", "min_free_disk_mb"): "Если свободного места меньше, МБ, самые старые записи удаляются",
     ("health", "max_cpu_temp"): "Неисправность, если температура процессора выше, °C",
     ("gallery", "videos_per_page"): "Роликов на странице во вкладке «Видео»: 10, 30 или 60",
     ("gallery", "session_days"): "Срок входа без повторного ввода пароля, дней (продлевается при каждом заходе)",
+    ("gallery", "trusted_proxies"): "IP-адреса обратных прокси перед галереей через запятую, например 127.0.0.1 для nginx на "
+                                    "этом устройстве. Для соединения с такого адреса адрес клиента в ограничениях входа — "
+                                    "последний элемент X-Forwarded-For. Пусто: адрес самого соединения",
     ("gallery", "environment"): "Какой это стенд: prod, stage или test. На стендах не prod в приложении виден значок "
                                 "TEST / STAGE, а облако по умолчанию — того же стенда (cloud.stage.zorcam.ru, "
                                 "cloud.test.zorcam.ru)",
@@ -148,6 +151,9 @@ STRINGS = {
     "section.gallery": {"en": "Gallery", "ru": "Галерея"},
     "cfg.allowed": {"en": "allowed: {values}", "ru": "допустимо: {values}"},
     "cfg.yes_no": {"en": "expected yes or no", "ru": "ожидается yes или no"},
+    "cfg.stun_list": {"en": "expected servers host[:port] separated by commas (port 1-65535)",
+                      "ru": "ожидаются серверы хост[:порт] через запятую (порт 1-65535)"},
+    "cfg.ip_list": {"en": "expected IP addresses separated by commas", "ru": "ожидаются IP-адреса через запятую"},
     "cfg.positive_list": {"en": "expected positive numbers separated by commas",
                           "ru": "ожидаются положительные числа через запятую"},
     "cfg.not_a_number": {"en": "expected a number", "ru": "ожидается число"},
@@ -176,6 +182,7 @@ STRINGS = {
     "brand.cloud": {"en": "Zorcam.cloud", "ru": "Зоркам.cloud"},
     "brand.tip_nvr": {"en": "Viewing directly on the device", "ru": "Просмотр напрямую с устройства"},
     "brand.tip_cloud": {"en": "Viewing through the Zorcam cloud", "ru": "Просмотр через облако Zorcam"},
+    "brand.open_cloud": {"en": "Open through the Zorcam cloud", "ru": "Открыть через облако Zorcam"},
     "not_found": {"en": "not found", "ru": "не найдено"},
     "yes": {"en": "yes", "ru": "да"},
     "no": {"en": "no", "ru": "нет"},
@@ -192,7 +199,8 @@ STRINGS = {
     "login.user": {"en": "Username", "ru": "Логин"},
     "login.password": {"en": "Password", "ru": "Пароль"},
     "login.submit": {"en": "Sign in", "ru": "Войти"},
-    "login.locked": {"en": "Too many attempts. Please wait a minute.", "ru": "Слишком много попыток. Подождите минуту."},
+    "login.locked": {"en": "Too many attempts. Please wait and try again.",
+                     "ru": "Слишком много попыток. Подождите и попробуйте снова."},
     "login.wrong": {"en": "Wrong username or password", "ru": "Неверный логин или пароль"},
 
     # ---- main page
@@ -202,6 +210,8 @@ STRINGS = {
     "tab.all": {"en": "Timelapse", "ru": "Timelapse"},
     "live.columns": {"en": "{n} per row", "ru": "{n} в ряд"},
     "live.reload": {"en": "Reconnect the cameras", "ru": "Переподключить камеры"},
+    "live.only_cam": {"en": "Live: this camera only", "ru": "Live: только эта камера"},
+    "live.all_cams": {"en": "All", "ru": "Все"},
     "live.embed_unavailable": {"en": "Camera unavailable", "ru": "Камера недоступна"},
     "logout": {"en": "Sign out", "ru": "Выйти"},
     "settings": {"en": "Settings", "ru": "Настройки"},
@@ -221,16 +231,19 @@ STRINGS = {
     "tl.speed": {"en": "Speed", "ru": "Скорость"},
     "tl.realtime": {"en": "× real time", "ru": "× реального времени"},  # после числа: «75× real time»
     "tl.loading": {"en": "Loading…", "ru": "Загрузка…"},
+    "tl.no_frames": {"en": "The camera was off", "ru": "Камера была отключена"},
     "tl.empty": {"en": "No snapshots for this period", "ru": "Нет снимков за этот период"},
     "tl.error": {"en": "Could not load the timelapse", "ru": "Не удалось загрузить таймлапс"},
     "tl.video": {"en": "Video", "ru": "Видео"},
     "cam.tabs_prev": {"en": "Earlier cameras", "ru": "Камеры слева"},
     "cam.tabs_next": {"en": "Later cameras", "ru": "Камеры справа"},
-    "tl.all_videos": {"en": "Go to videos", "ru": "Перейти в видео"},
+    "tl.all_videos": {"en": "All videos", "ru": "Все видео"},
     # {when} подставляет JS: ДД.ММ ЧЧ:ММ
     "tl.deleted": {"en": "Recordings for {when} have been deleted", "ru": "Записи за {when} уже удалены"},
     "tl.clip_error": {"en": "Could not load the video", "ru": "Не удалось загрузить видео"},
     "tl.clip_close": {"en": "Close", "ru": "Закрыть"},
+    "tl.clip_prev": {"en": "Earlier video", "ru": "Раньше"},
+    "tl.clip_next": {"en": "Later video", "ru": "Позже"},
     "tl.clip_download": {"en": "Download", "ru": "Скачать"},
     "tl.video_open": {"en": "Open the video of this motion", "ru": "Открыть видео этого движения"},
     "tl.keys": {"en": "Keyboard: Space plays or pauses, ← → step a frame (Shift: 10), Home and End jump to the ends, "
@@ -290,9 +303,6 @@ STRINGS = {
     # ---- push notifications
     "push.enabled": {"en": "Motion notifications are on", "ru": "Уведомления о движении включены"},
     "push.motion": {"en": "Motion", "ru": "Движение"},
-    "push.problem": {"en": "{text}", "ru": "{text}"},
-    "push.still": {"en": "still {text} (since {since})", "ru": "всё ещё {text} (с {since})"},
-    "push.recovered": {"en": "back to normal: {text}", "ru": "снова в норме — {text}"},
 
     # ---- monitoring
     "st.frames": {"en": "Motion detector", "ru": "Детектор движения"},
@@ -393,6 +403,14 @@ STRINGS = {
                              "ru": "Удалить пользователя {name}? Он больше не сможет войти."},
     "users.name_taken": {"en": "this name is already taken", "ru": "это имя уже занято"},
     "users.saved": {"en": "Saved: {name}", "ru": "Сохранено: {name}"},
+    "users.signout_others": {"en": "Sign out on other devices", "ru": "Выйти на других устройствах"},
+    "users.signout_others_q": {"en": "Sign out on all other devices? You stay signed in on this one.",
+                               "ru": "Выйти на всех других устройствах? На этом вы останетесь в системе."},
+    "users.signout_others_done": {"en": "Signed out on the other devices.", "ru": "Вы вышли на других устройствах."},
+    "users.end_sessions": {"en": "End the sessions", "ru": "Завершить сеансы"},
+    "users.end_sessions_q": {"en": "End all sessions of {name}? They will have to sign in again.",
+                             "ru": "Завершить все сеансы пользователя {name}? Ему придётся войти заново."},
+    "users.sessions_ended": {"en": "Sessions ended: {name}", "ru": "Сеансы завершены: {name}"},
     "role.liveviewer": {"en": "Live", "ru": "Live"},
     "role.viewer": {"en": "Viewer", "ru": "Viewer"},
     "role.admin": {"en": "Admin", "ru": "Admin"},
@@ -404,12 +422,28 @@ STRINGS = {
     "st.version": {"en": "Version", "ru": "Версия"},
     "st.environment": {"en": "Environment", "ru": "Стенд"},
     "st.edition": {"en": "Edition", "ru": "Редакция"},
+    "st.serial": {"en": "Serial number", "ru": "Серийный номер"},
     "st.device": {"en": "Device", "ru": "Устройство"},
     "st.ram": {"en": "RAM {size}", "ru": "ОЗУ {size}"},
     "st.ram_gb": {"en": "{n} GB", "ru": "{n} ГБ"},
     "st.ram_mb": {"en": "{n} MB", "ru": "{n} МБ"},
+    # строка «Сеть» — только совет, когда устройство не на кабеле или включены Wi-Fi/Bluetooth; README, «Перед установкой»
+    "st.network": {"en": "Network", "ru": "Сеть"},
+    "st.network_wifi": {"en": "Wi-Fi", "ru": "Wi-Fi"},
+    "st.network_radio_wifi": {"en": "Wi-Fi on", "ru": "включён Wi-Fi"},
+    "st.network_radio_bt": {"en": "Bluetooth on", "ru": "включён Bluetooth"},
+    "st.network_radio_both": {"en": "Wi-Fi and Bluetooth on", "ru": "включены Wi-Fi и Bluetooth"},
+    "st.network_why_wifi": {
+        "en": "Connect the device with an Ethernet cable and turn Wi-Fi and Bluetooth off: the camera streams run around "
+              "the clock, and Wi-Fi is slower and drops. The commands are in the README, section \"Before you install\".",
+        "ru": "Подключите устройство кабелем Ethernet и выключите Wi-Fi и Bluetooth: поток камер идёт круглосуточно, "
+              "а Wi-Fi медленнее и рвётся. Команды — в README, раздел «Перед установкой»."},
+    "st.network_why_radio": {
+        "en": "Turn Wi-Fi and Bluetooth off: Zorcam does not need them. The commands are in the README, section "
+              "\"Before you install\".",
+        "ru": "Выключите Wi-Fi и Bluetooth: Zorcam они не нужны. Команды — в README, раздел «Перед установкой»."},
     "st.external": {"en": "External address", "ru": "Внешний адрес"},
-    "st.external_ok": {"en": "{ip} (STUN {server})", "ru": "{ip} (STUN {server})"},
+    "st.external_ok": {"en": "{ip}\nSTUN {server}", "ru": "{ip}\nSTUN {server}"},
     "st.external_none": {"en": "not determined", "ru": "не определён"},
     "st.external_why": {
         "en": "No STUN server answered. Live from the internet may fall back to the delayed HLS stream; "
@@ -453,6 +487,7 @@ STRINGS = {
     "st.ago": {"en": "{ago} ago", "ru": "{ago} назад"},
     "cf.error": {"en": "Error in zorcam.conf", "ru": "Ошибка в zorcam.conf"},
     "rec.section": {"en": "Recordings", "ru": "Записи"},
+    "rec.counting": {"en": "counting…", "ru": "считается…"},
     "rec.delete": {"en": "Delete", "ru": "Удалить"},
     "rec.delete_all": {"en": "Delete all", "ru": "Удалить все"},
     "rec.confirm_all": {"en": "Are you sure? All snapshots and motion videos of {name} will be deleted. This cannot be undone.",
@@ -507,6 +542,7 @@ STRINGS = {
     "cloud.cancel_q": {"en": "Cancel connecting to the cloud?", "ru": "Отменить подключение к облаку?"},
     "cloud.expired": {"en": "The code expired: connect again", "ru": "Код устарел: подключите ещё раз"},
     "cloud.paired": {"en": "Connected; this device in the cloud:", "ru": "Подключено; это устройство в облаке:"},
+    "cloud.owner": {"en": "Owner", "ru": "Владелец"},
     "cloud.disconnect": {"en": "Disconnect from the cloud", "ru": "Отвязать от облака"},
     "cloud.disconnect_q": {"en": "Disconnect this device from the cloud? At home everything keeps working.",
                            "ru": "Отвязать это устройство от облака? Дома всё продолжит работать."},
@@ -578,6 +614,77 @@ STRINGS = {
                            "Войдите как admin, чтобы разрешить."},
     "ya.allow": {"en": "Allow", "ru": "Разрешить"},
     "ya.auth_wrong": {"en": "Wrong name or password, or not the admin", "ru": "Неверное имя или пароль, или это не admin"},
+    "mqtt.title": {"en": "MQTT and Home Assistant", "ru": "MQTT и Home Assistant"},
+    "mqtt.short": {"en": "Motion of every camera to your MQTT broker; in Home Assistant the cameras appear by themselves",
+                   "ru": "Движение каждой камеры в ваш MQTT-брокер; в Home Assistant камеры появляются сами"},
+    "mqtt.open": {"en": "Set up", "ru": "Настроить"},
+    "mqtt.off": {"en": "Off", "ru": "Выключено"},
+    "mqtt.on": {"en": "On: {host}:{port}", "ru": "Включено: {host}:{port}"},
+    "mqtt.intro": {"en": "The device publishes the motion of every enabled camera (ON, and OFF after a minute without "
+                         "motion) and its own online / offline state to your MQTT broker, for Home Assistant and any "
+                         "other system. Only the camera ID and name, ON / OFF and the state go out, no video or "
+                         "snapshots. Changes apply at once, without restarting.",
+                   "ru": "Устройство публикует в ваш MQTT-брокер движение каждой включённой камеры (ON, а через минуту "
+                         "без движения OFF) и своё состояние online / offline — для Home Assistant и любых других "
+                         "систем. Уходят только ID и название камеры, ON / OFF и состояние, без видео и снимков. "
+                         "Изменения применяются сразу, без перезапуска."},
+    "mqtt.broker_section": {"en": "Broker", "ru": "Брокер"},
+    "mqtt.topics_section": {"en": "Topics", "ru": "Темы"},
+    "mqtt.enabled": {"en": "Publish to MQTT", "ru": "Публиковать в MQTT"},
+    "mqtt.host": {"en": "Broker address", "ru": "Адрес брокера"},
+    "mqtt.host_hint": {"en": "Name or IP address, for example 192.168.1.10", "ru": "Имя или IP-адрес, например 192.168.1.10"},
+    "mqtt.port": {"en": "Port", "ru": "Порт"},
+    "mqtt.port_hint": {"en": "Empty: 1883, with TLS 8883", "ru": "Пусто: 1883, с TLS 8883"},
+    "mqtt.tls": {"en": "TLS (encrypted connection)", "ru": "TLS (шифрованное соединение)"},
+    "mqtt.tls_hint": {"en": "The broker certificate is checked: a self-signed one is not accepted until its authority is "
+                            "added to the device's system certificates.",
+                      "ru": "Сертификат брокера проверяется: самоподписанный не принимается, пока его центр не добавлен "
+                            "в системные сертификаты устройства."},
+    "mqtt.username": {"en": "Login", "ru": "Логин"},
+    "mqtt.username_hint": {"en": "Empty: the broker lets anonymous clients in", "ru": "Пусто: брокер пускает без логина"},
+    "mqtt.password": {"en": "Password", "ru": "Пароль"},
+    "mqtt.prefix": {"en": "Topic prefix", "ru": "Префикс тем"},
+    "mqtt.prefix_hint": {"en": "Topics are prefix/device/camera/motion", "ru": "Темы: префикс/устройство/камера/motion"},
+    "mqtt.device": {"en": "Device name", "ru": "Имя устройства"},
+    "mqtt.device_hint": {"en": "Lowercase letters, digits, - and _; two devices on one broker need different names",
+                         "ru": "Строчные буквы, цифры, - и _; два устройства на одном брокере — с разными именами"},
+    "mqtt.discovery": {"en": "Home Assistant discovery", "ru": "Автообнаружение Home Assistant"},
+    "mqtt.discovery_hint": {"en": "Every camera appears in Home Assistant as a motion sensor by itself; switched off, "
+                                  "the sensors are removed from it.",
+                            "ru": "Каждая камера сама появляется в Home Assistant датчиком движения; при выключении "
+                                  "датчики из него удаляются."},
+    "mqtt.keep": {"en": "set — leave empty to keep", "ru": "задан — оставьте пустым"},
+    "mqtt.saved": {"en": "Saved", "ru": "Сохранено"},
+    "mqtt.invalid": {"en": "Not saved: check the highlighted fields", "ru": "Не сохранено: проверьте отмеченные поля"},
+    "mqtt.back": {"en": "Back to General settings", "ru": "Назад в «Общие»"},
+    "mqtt.bad.host": {"en": "Enter a name or an IP address, letters, digits, dots, dashes and colons only",
+                      "ru": "Введите имя или IP-адрес: только буквы, цифры, точки, дефисы и двоеточия"},
+    "mqtt.bad.host_empty": {"en": "Enter the broker address", "ru": "Введите адрес брокера"},
+    "mqtt.bad.port": {"en": "The port is a number from 1 to 65535", "ru": "Порт — число от 1 до 65535"},
+    "mqtt.bad.prefix": {"en": "Letters, digits, - and _ (parts may be separated by /), up to 64 characters",
+                        "ru": "Буквы, цифры, - и _ (части можно разделять /), до 64 знаков"},
+    "mqtt.bad.device": {"en": "Lowercase letters, digits, - and _, up to 32 characters",
+                        "ru": "Строчные буквы, цифры, - и _, до 32 знаков"},
+    "mqtt.bad.login": {"en": "The login and the password are up to 256 characters", "ru": "Логин и пароль — до 256 знаков"},
+    "mqtt.err.connect": {"en": "cannot connect to the broker: {error}", "ru": "не удалось подключиться к брокеру: {error}"},
+    "mqtt.err.timeout": {"en": "the broker did not answer in time", "ru": "брокер не ответил вовремя"},
+    "mqtt.err.closed": {"en": "the broker closed the connection", "ru": "брокер закрыл соединение"},
+    "mqtt.err.tls": {"en": "TLS: {error}", "ru": "TLS: {error}"},
+    "mqtt.err.protocol": {"en": "unexpected reply from the broker (is it an MQTT broker, and is the port right?)",
+                          "ru": "неожиданный ответ брокера (это MQTT-брокер, тот ли порт?)"},
+    "mqtt.err.version": {"en": "the broker does not support MQTT 3.1.1", "ru": "брокер не поддерживает MQTT 3.1.1"},
+    "mqtt.err.client_id": {"en": "the broker rejected the client name", "ru": "брокер отклонил имя клиента"},
+    "mqtt.err.unavailable": {"en": "the broker is not available", "ru": "брокер сейчас недоступен"},
+    "mqtt.err.credentials": {"en": "wrong login or password", "ru": "неверный логин или пароль"},
+    "mqtt.err.not_authorized": {"en": "not authorized: the broker does not let this login in",
+                                "ru": "нет доступа: брокер не пускает этот логин"},
+    "mqtt.err.refused": {"en": "the broker refused the connection (code {code})",
+                         "ru": "брокер отказал в подключении (код {code})"},
+    "mqtt.err.internal": {"en": "internal error: {error}", "ru": "внутренняя ошибка: {error}"},
+    "st.mqtt": {"en": "MQTT", "ru": "MQTT"},
+    "st.mqtt_ok": {"en": "connected to {host}:{port}", "ru": "подключено к {host}:{port}"},
+    "st.mqtt_connecting": {"en": "connecting to {host}:{port}…", "ru": "подключаемся к {host}:{port}…"},
+    "st.mqtt_none": {"en": "not connected to {host}:{port}", "ru": "нет подключения к {host}:{port}"},
     "onvif.find": {"en": "Find cameras in the network (ONVIF)", "ru": "Найти камеры в сети (ONVIF)"},
     "onvif.title": {"en": "Cameras in the network", "ru": "Камеры в сети"},
     "onvif.intro": {"en": "Cameras that answered an ONVIF search in the home network. Enter the login and password of "
@@ -598,11 +705,10 @@ STRINGS = {
     "onvif.manual": {"en": "Enter manually", "ru": "Ввести вручную"},
     "onvif.subnet": {"en": "Search", "ru": "Поиск"},
     "onvif.subnet_label": {"en": "Another subnet", "ru": "Другая подсеть"},
-    "onvif.subnet_hint": {"en": "optional: cameras behind the router in another subnet, e.g. 192.168.2.0 (home network "
-                                "only, up to 254 addresses); the search asks each of its addresses. Kept on this device",
-                          "ru": "необязательно: камеры за роутером в другой подсети, например 192.168.2.0 (только "
-                                "домашняя сеть, до 254 адресов); поиск спросит каждый её адрес. Запоминается на этом "
-                                "устройстве"},
+    "onvif.subnet_hint": {"en": "By default, cameras are searched in the current subnet. To search another subnet (for "
+                                "example, beyond the router), enter its address",
+                          "ru": "По умолчанию, сканирование камер производится в текущей подсети, если хотите поискать в "
+                                "другой подсети (например, за пределами роутера) - укажите ее адрес"},
     "onvif.subnet_bad": {"en": "«{subnet}» is not a home subnet of up to 254 addresses (like 192.168.2.0): searched "
                                "only the network of the device",
                          "ru": "«{subnet}» — не домашняя подсеть до 254 адресов (как 192.168.2.0): поиск только "
@@ -674,8 +780,6 @@ STRINGS = {
     "cam.hint.audio": {"en": "as the camera sends it, never re-encoded: WebRTC plays G.711 and Opus, HLS and clips take AAC",
                        "ru": "как его отдаёт камера, без перекодирования: WebRTC играет G.711 и Opus, HLS и ролики берут AAC"},
     "ptz.group": {"en": "Camera movement", "ru": "Управление камерой"},
-    "ptz.no_onvif": {"en": "Set the ONVIF address in the camera settings",
-                     "ru": "Укажите адрес ONVIF в настройках камеры"},
     "ptz.toggle": {"en": "Camera control", "ru": "Управление"},
     "ptz.left": {"en": "Turn left", "ru": "Повернуть влево"},
     "ptz.right": {"en": "Turn right", "ru": "Повернуть вправо"},
@@ -694,6 +798,8 @@ STRINGS = {
     "cam.label.frames_interval": {"en": "Snapshot interval, seconds", "ru": "Периодичность снимков, секунд"},
     "cam.label.frames_days": {"en": "Keep snapshots, days", "ru": "Хранить снимки, дней"},
     "cam.password": {"en": "Password", "ru": "Пароль"},
+    "cam.password_again": {"en": "The camera address has changed: enter the password again",
+                           "ru": "Адрес камеры изменился: введите пароль ещё раз"},
     "cam.password_none": {"en": "no authentication", "ru": "без авторизации"},
     "cam.probe_failed": {"en": "The camera did not accept the connection: {error}. Check the address, login and "
                                "password and enter the password again. To save the camera anyway (for example, it is "
@@ -750,8 +856,14 @@ STRINGS = {
                           "ru": "Пароль администратора — не короче 6 символов. Остальных пользователей (Live и галерея "
                                 "или только Live) добавите потом в «Настройки» → «Польз.»."},
     "setup.user_title.admin": {"en": "Administrator", "ru": "Администратор"},
-    "setup.user_note.admin": {"en": "Everything: Live, recordings, settings, cameras, notifications about failures.",
-                              "ru": "Всё: Live, записи, настройки, камеры, уведомления о неисправностях."},
+    "setup.user_note.admin": {"en": "Everything: Live, recordings, settings, cameras.",
+                              "ru": "Всё: Live, записи, настройки, камеры."},
+    "pw.title": {"en": "Change the password", "ru": "Смените пароль"},
+    "pw.intro": {"en": "The administrator password was set when the device was installed. Choose your own, at least 6 "
+                       "characters: it replaces the one you were given.",
+                 "ru": "Пароль администратора задан при установке устройства. Задайте свой, не короче 6 символов: "
+                       "он заменит тот, что вам выдали."},
+    "pw.skip": {"en": "Skip", "ru": "Пропустить"},
     "setup.repeat": {"en": "repeat the password", "ru": "повторите пароль"},
     "setup.mismatch": {"en": "the passwords do not match", "ru": "пароли не совпадают"},
     "setup.short": {"en": "the password must be at least 6 characters", "ru": "пароль должен быть не короче 6 символов"},

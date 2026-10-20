@@ -6,7 +6,7 @@ later is closed to everyone until admin switches it on for them.
 Roles:
   liveviewer - Live only: no recordings, settings or push
   viewer     - Live, videos and frames, motion push notifications
-  admin      - everything: the same + Settings, cameras, /config and push notifications about failures;
+  admin      - everything: the same + Settings, cameras and /config;
                there is one administrator, and its name is admin
 
 admin is created in the setup wizard of the gallery (the first visit after installation); the other users
@@ -14,7 +14,13 @@ are added on Settings -> Users, or with this command.
 
     sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_users.py list
     sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_users.py set NAME ROLE   # create, or change the password/role
+    sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_users.py set NAME ROLE --password-stdin   # password from stdin
+    sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_users.py set admin admin --initial --password-stdin
     sudo -u zorcam-nvr python3 /opt/zorcam-nvr/gallery/zorcam_users.py del NAME
+
+--initial marks the password as set by the installer: the gallery asks admin to change it at the first sign-in
+("initial": true in users.json). Any other way of setting the password (this command without --initial, Settings -> Users,
+the change-password page) clears the mark.
 """
 import getpass
 import hashlib
@@ -65,7 +71,9 @@ def name_ok(name):
     return bool(name) and len(name) <= MAX_NAME and not any(c.isspace() or not c.isprintable() for c in name)
 
 
-def set_user(name, role, password):
+def set_user(name, role, password, initial=False):
+    """Create the user or change the password/role. initial: the password comes from the installer, the user is asked
+    to change it; without it the mark is cleared."""
     if role not in ROLES:
         raise ValueError(f"role must be one of: {', '.join(ROLES)}")
     if not name_ok(name):
@@ -76,16 +84,30 @@ def set_user(name, role, password):
         raise ValueError(f"the user {find(name)} exists: names differ by more than letter case")
     if len(password) < 6:
         raise ValueError("the password must be at least 6 characters")
-    _store(name, role, password)
+    _store(name, role, password, initial)
 
 
-def _store(name, role, password):
+def _store(name, role, password, initial=False):
     users = load()
     salt = secrets.token_hex(16)
     # новый пользователь не видит ни одной камеры, пока admin их не включит; у существующего cameras сохраняется
     old = users.get(name) or ({} if role == "admin" else {"cameras": []})
-    users[name] = {**old, "role": role, "salt": salt, "hash": _hash(password, salt)}
+    # метка «пароль задан установщиком» снимается любой установкой пароля; её ставит только --initial
+    users[name] = {**{k: v for k, v in old.items() if k != "initial"}, "role": role, "salt": salt,
+                   "hash": _hash(password, salt), **({"initial": True} if initial else {})}
     save(users)
+
+
+def is_initial(name):
+    """The password of the user was set by the installer and not changed since (set … --initial)."""
+    return load().get(name, {}).get("initial") is True
+
+
+def clear_initial(name):
+    """The user keeps the installer's password on purpose (Skip on the change-password page): stop asking."""
+    users = load()
+    if name in users and users[name].pop("initial", None) is not None:
+        save(users)
 
 
 def set_role(name, role):
@@ -214,14 +236,22 @@ if __name__ == "__main__":
             for name, u in sorted(users.items()):
                 cams = "every camera" if u["role"] == "admin" else ", ".join(sorted(cameras_of(name))) or "no cameras"
                 print(f"{name:20} {u['role']:10} {ROLE_TITLES[u['role']]}; cameras: {cams}")
-        elif args[:1] == ["set"] and len(args) == 3:
-            p1 = getpass.getpass(f"Password for {args[1]}: ")
-            p2 = getpass.getpass("Repeat: ")
-            if p1 != p2:
-                sys.exit("passwords do not match")
-            set_user(args[1], args[2], p1)
-            print(f"saved: {args[1]} ({args[2]}). Sessions this user already has stay signed in.")
-            if args[2] != "admin" and not cameras_of(args[1]):
+        elif args[:1] == ["set"]:
+            flags = {a for a in args[1:] if a.startswith("--")}
+            names = [a for a in args[1:] if not a.startswith("--")]
+            if len(names) != 2 or flags - {"--initial", "--password-stdin"}:
+                sys.exit(__doc__)
+            if "--password-stdin" in flags:  # a script: the password is not an argument (ps shows those) and not asked for
+                p1 = sys.stdin.readline().rstrip("\r\n")
+            else:
+                p1 = getpass.getpass(f"Password for {names[0]}: ")
+                if p1 != getpass.getpass("Repeat: "):
+                    sys.exit("passwords do not match")
+            set_user(names[0], names[1], p1, initial="--initial" in flags)
+            print(f"saved: {names[0]} ({names[1]}). Sessions this user already has stay signed in.")
+            if "--initial" in flags:
+                print("the password is marked as set by the installer: the gallery asks to change it at the first sign-in")
+            if names[1] != "admin" and not cameras_of(names[0]):
                 print("this user sees no camera yet: switch the cameras on on Settings -> Users")
         elif args[:1] == ["del"] and len(args) == 2:
             print("deleted" if delete_user(args[1]) else "no such user")

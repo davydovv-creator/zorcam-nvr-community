@@ -28,6 +28,17 @@ def test_probe_match():
     assert not onvif.local_host("8.8.8.8") and onvif.local_host("192.168.1.50")
 
 
+def test_local_host_is_the_home_network_only():
+    """Not the device itself (go2rtc, the cloud tunnel and other services listen on 127.0.0.1), not 0.0.0.0, not a
+    multicast group; the other addresses of Python's is_private (loopback among them) do not count as cameras."""
+    from conftest import REAL_LOCAL_HOST as local_host
+    for ok in ("192.168.1.50", "10.0.0.7", "172.16.5.5", "169.254.10.10", "fe80::1", "fd00::5"):
+        assert local_host(ok), ok
+    for bad in ("127.0.0.1", "127.1.2.3", "::1", "0.0.0.0", "::", "224.0.0.1", "239.255.255.250", "ff02::1", "8.8.8.8",
+                "2001:4860:4860::8888", "", "localhost", "example.org"):
+        assert not local_host(bad), bad
+
+
 def reply(body):
     return ('<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
             'xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
@@ -223,10 +234,15 @@ def test_discover_asks_every_address_of_a_subnet():
     assert [d["host"] for d in found] == ["127.0.0.2"] and found[0]["name"] == "Hall cam"
 
 
+# what the PTZ node of the fake PTZ camera can do (GetNodes); None — the camera answers GetNodes with a fault
+PTZ_SPACES = {"spaces": ("ContinuousPanTiltVelocitySpace", "ContinuousZoomVelocitySpace")}
+
+
 @pytest.fixture
 def ptz_camera():
     """A camera with PTZ (login admin / secret): the PTZ service on its own address, two profiles, only the second has
-    a PTZConfiguration. Records the bodies of ContinuousMove and Stop."""
+    a PTZConfiguration (node "n2"); GetNodes lists two nodes, "n2" can do PTZ_SPACES. Records the bodies of
+    ContinuousMove and Stop."""
     seen = []
 
     class Camera(BaseHTTPRequestHandler):
@@ -248,6 +264,17 @@ def ptz_camera():
             if action in ("ContinuousMove", "Stop"):
                 seen.append((self.path, data))
                 return self.answer(200, reply(f"<tptz:{action}Response xmlns:tptz='http://www.onvif.org/ver20/ptz/wsdl'/>"))
+            if action == "GetNodes":
+                if PTZ_SPACES["spaces"] is None:
+                    return self.answer(500, reply("<s:Fault><s:Reason><s:Text>Action not supported</s:Text>"
+                                                  "</s:Reason></s:Fault>"))
+                spaces = "".join(f"<tt:{s}><tt:URI>x</tt:URI></tt:{s}>" for s in PTZ_SPACES["spaces"])
+                return self.answer(200, reply(
+                    "<tptz:GetNodesResponse xmlns:tptz='http://www.onvif.org/ver20/ptz/wsdl'>"
+                    '<tptz:PTZNode token="n1"><tt:SupportedPTZSpaces><tt:ContinuousZoomVelocitySpace/>'
+                    "</tt:SupportedPTZSpaces></tptz:PTZNode>"
+                    f'<tptz:PTZNode token="n2"><tt:SupportedPTZSpaces>{spaces}</tt:SupportedPTZSpaces></tptz:PTZNode>'
+                    "</tptz:GetNodesResponse>"))
             if action == "GetCapabilities":
                 cat = re.search(r"<tds:Category>(\w+)<", data).group(1)
                 path = {"Media": "media", "PTZ": "ptz"}[cat]
@@ -255,7 +282,8 @@ def ptz_camera():
                         f"/onvif/{path}</tt:XAddr></tt:{cat}></tds:Capabilities></tds:GetCapabilitiesResponse>")
             else:
                 body = ("<trt:GetProfilesResponse>" + PROFILE.format(tok="fixed", w=640, h=360)
-                        + '<trt:Profiles token="pt&amp;1"><tt:PTZConfiguration token="c"/></trt:Profiles>'
+                        + '<trt:Profiles token="pt&amp;1"><tt:PTZConfiguration token="c"><tt:NodeToken>n2</tt:NodeToken>'
+                        + "</tt:PTZConfiguration></trt:Profiles>"
                         + "</trt:GetProfilesResponse>")
             self.answer(200, reply(body))
 
@@ -276,6 +304,7 @@ def test_ptz_move_and_stop(ptz_camera):
     xaddr, seen = ptz_camera
     cap = onvif.ptz_support(xaddr, "admin", "secret")
     assert cap["url"].endswith("/onvif/ptz") and cap["token"] == "pt&1"  # the profile that has a PTZConfiguration
+    assert cap["pan"] and cap["zoom"]
     onvif.ptz_move(cap, "admin", "secret", pan=-0.5, tilt=0.5, seconds=2)
     onvif.ptz_move(cap, "admin", "secret", zoom=5)  # clamped to 1
     onvif.ptz_stop(cap, "admin", "secret")
@@ -309,3 +338,19 @@ def test_camera_url_stays_in_the_home_network():
     assert onvif.camera_url({"rtsp_url": "rtsp://8.8.8.8/x", "onvif_url": "http://10.0.0.2:8000/onvif/d"}) == \
         "http://10.0.0.2:8000/onvif/d"
     assert onvif.camera_url({"rtsp_url": "rtsp://192.168.1.5/x", "onvif_url": "http://1.2.3.4/onvif"}) == ""
+
+
+def test_ptz_support_reads_what_the_node_can_do(ptz_camera, monkeypatch):
+    """A PTZConfiguration in a profile is not enough (many fixed cameras have one): the spaces of the profile's PTZ node
+    decide; a camera that does not answer GetNodes keeps every button, as before."""
+    xaddr, _seen = ptz_camera
+    for spaces, want in ((("ContinuousZoomVelocitySpace",), (False, True)),
+                         (("ContinuousPanTiltVelocitySpace",), (True, False)),
+                         (None, (True, True))):
+        monkeypatch.setitem(PTZ_SPACES, "spaces", spaces)
+        cap = onvif.ptz_support(xaddr, "admin", "secret")
+        assert (cap["pan"], cap["zoom"]) == want, spaces
+    monkeypatch.setitem(PTZ_SPACES, "spaces", ("AbsolutePanTiltPositionSpace",))  # no continuous move: nothing to press
+    with pytest.raises(onvif.OnvifError) as e:
+        onvif.ptz_support(xaddr, "admin", "secret")
+    assert e.value.key == "no_ptz"

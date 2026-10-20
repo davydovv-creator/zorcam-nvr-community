@@ -56,12 +56,12 @@ def test_environment_sets_cloud_badge_and_title(tmp_path, env, name, cloud, badg
         body = html[html.index("</head>"):]
         marker = '<span class="envbadge">'
         if badge:
-            assert f'</button>{marker}{badge}</span></span>' in body, page
+            assert f'</span>{marker}{badge}</span></span>' in body, page  # after the hint of the mode icon
         else:
             assert marker not in body and '<span class="appname"><span>Zorcam.nvr</span><button' in body, page
     # the sidebar of a laptop: the name and the same badge, no second header
     assert got["tabbar"].count('class="brand"') == 1
-    assert (f'</button><span class="envbadge">{badge}</span></div>' in got["tabbar"]) == bool(badge)
+    assert (f'</span><span class="envbadge">{badge}</span></div>' in got["tabbar"]) == bool(badge)
     # Settings -> Status shows the stand only when it is not prod
     status_row = '<div class="k">Environment</div>'
     assert (status_row in got["settings"]) == bool(badge)

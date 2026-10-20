@@ -68,22 +68,57 @@ def clean(monkeypatch):
     monkeypatch.setattr(stun, "_state", {"ip": None, "at": None, "server": None, "checked": None, "why": None,
                                           "logged": None})
     monkeypatch.setattr(stun, "_cloud_hosts", [])
+    monkeypatch.setattr(stun, "_custom", [])
+    monkeypatch.setattr(stun, "_environment", "prod")
 
 
 def ice(*urls):
     return [{"urls": list(urls), "username": "u", "credential": "c"}]
 
 
+PROD = ("turn.zorcam.ru", 3478)
+GOOGLE, CLOUDFLARE = ("stun.l.google.com", 19302), ("stun.cloudflare.com", 3478)
+
+
 def test_servers_without_and_with_the_cloud(clean):
-    assert stun.servers() == [("stun.cloudflare.com", 3478), ("stun.l.google.com", 19302)]
+    assert stun.servers() == [PROD, GOOGLE, CLOUDFLARE]
     stun.note_cloud_ice(ice("turn:turn.example.org:3480?transport=udp", "turn:turn.example.org:3480?transport=tcp",
                             "turns:turn.example.org:5349?transport=tcp"))
-    assert stun.servers() == [("turn.example.org", 3480), ("turn.example.org", 3478),
-                              ("stun.cloudflare.com", 3478), ("stun.l.google.com", 19302)]
+    assert stun.servers() == [("turn.example.org", 3480), ("turn.example.org", 3478), PROD, GOOGLE, CLOUDFLARE]
     stun.note_cloud_ice([])  # nothing new: the known ones stay
     assert stun.servers()[0] == ("turn.example.org", 3480)
     stun.note_cloud_ice(ice("turn:other.example.org"))
     assert stun.servers()[0] == ("other.example.org", 3478)
+
+
+def test_servers_by_environment(clean, monkeypatch):
+    for env, server in (("prod", PROD), ("stage", ("turn.stage.zorcam.ru", 3488)), ("test", ("turn.test.zorcam.ru", 3498))):
+        monkeypatch.setattr(stun, "_environment", env)
+        assert stun.servers() == [server, GOOGLE, CLOUDFLARE]
+    monkeypatch.setattr(stun, "_environment", "other")  # unknown stand: only the public ones
+    assert stun.servers() == [GOOGLE, CLOUDFLARE]
+
+
+def test_servers_from_cloud_json(clean, monkeypatch):
+    """The cloud STUN saved in cloud.json comes first and survives a restart; ICE hosts follow, duplicates go once."""
+    cloud = {"stun": "stun.cloud.example:3479"}
+    monkeypatch.setattr(stun.zorcam_cloud, "load", lambda: cloud)
+    assert stun.servers() == [("stun.cloud.example", 3479), PROD, GOOGLE, CLOUDFLARE]
+    stun.note_cloud_ice(ice("turn:stun.cloud.example:3479", "turn:turn.example.org:3480"))
+    assert stun.servers() == [("stun.cloud.example", 3479), ("turn.example.org", 3480), PROD, GOOGLE, CLOUDFLARE]
+    cloud["stun"] = "turn.zorcam.ru:3478"  # the same as the stand's: once
+    assert stun.servers() == [PROD, ("stun.cloud.example", 3479), ("turn.example.org", 3480), GOOGLE, CLOUDFLARE]
+    for bad in ("junk", "host:0", "host:70000", "host", 5, None, "Host:3478"):
+        cloud["stun"] = bad
+        assert stun.servers()[0] == ("stun.cloud.example", 3479), bad  # ignored
+
+
+def test_parameter_replaces_the_list(clean):
+    stun.note_cloud_ice(ice("turn:turn.example.org:3480"))
+    stun.configure("test", "stun.my.example, 192.0.2.7:3490 ,stun.my.example:3478")
+    assert stun.servers() == [("stun.my.example", 3478), ("192.0.2.7", 3490)]  # no cloud, stand or public ones
+    stun.configure("test", "")
+    assert stun.servers()[0] == ("turn.example.org", 3480) and ("turn.test.zorcam.ru", 3498) in stun.servers()
 
 
 def test_probe_goes_through_the_servers_until_an_answer(clean):
@@ -97,7 +132,7 @@ def test_probe_goes_through_the_servers_until_an_answer(clean):
 
     stun.note_cloud_ice(ice("turn:turn.example.org:3478"))
     assert stun.probe(lines.append, ask) == "93.184.216.34"
-    assert asked == ["turn.example.org", "stun.cloudflare.com"]
+    assert asked == ["turn.example.org", "turn.zorcam.ru", "stun.l.google.com", "stun.cloudflare.com"]
     assert stun.external() == ("93.184.216.34", "stun.cloudflare.com:3478")
     stun.probe(lines.append, ask)
     assert len(lines) == 1 and "93.184.216.34" in lines[0]  # unchanged: not logged again

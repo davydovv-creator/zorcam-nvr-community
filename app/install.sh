@@ -132,12 +132,14 @@ known_sha256() {
     esac
 }
 # check_sha256 FILE NAME: 0 if the file is the known one; another version (GO2RTC_VERSION=..., FRP_VERSION=...)
-# has no checksum here and is installed with a warning
+# has no checksum here and is not installed (it runs as root), unless ZORCAM_ALLOW_UNVERIFIED=1: then with a warning
 check_sha256() {
     local want
     want="$(known_sha256 "$2")"
     if [ -z "$want" ]; then
-        warn "no checksum of $2 in install.sh: installed without the check"
+        [ "${ZORCAM_ALLOW_UNVERIFIED:-0}" = 1 ] \
+            || die "no checksum of $2 in install.sh: not installed (to install it unchecked: ZORCAM_ALLOW_UNVERIFIED=1)"
+        warn "no checksum of $2 in install.sh: installed without the check (ZORCAM_ALLOW_UNVERIFIED=1)"
         return 0
     fi
     [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$want" ]
@@ -227,6 +229,9 @@ copy "$SRC/gallery/push.py"          "$PREFIX/gallery/push.py"      644 && RESTA
 copy "$SRC/gallery/onvif.py"         "$PREFIX/gallery/onvif.py"     644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/yandex.py"        "$PREFIX/gallery/yandex.py"    644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/stun.py"          "$PREFIX/gallery/stun.py"      644 && RESTART_GALLERY=1 || true
+copy "$SRC/gallery/episodes.py"      "$PREFIX/gallery/episodes.py"  644 && RESTART_GALLERY=1 || true
+copy "$SRC/gallery/mqtt.py"          "$PREFIX/gallery/mqtt.py"      644 && RESTART_GALLERY=1 || true
+copy "$SRC/gallery/brand.py"          "$PREFIX/gallery/brand.py"     644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_users.py"   "$PREFIX/gallery/zorcam_users.py" 755 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_html.py"    "$PREFIX/gallery/zorcam_html.py"  644 && RESTART_GALLERY=1 || true
 copy "$SRC/common/zorcam_config.py"   "$PREFIX/capture/zorcam_config.py" 644 && RESTART_CAPTURE=1 || true
@@ -241,6 +246,8 @@ copy "$SRC/cloud/daemon.py"          "$PREFIX/cloud/daemon.py"        755 && RES
 # the recordings disk (USB): run by systemd as root, on a timer and on a request of the gallery; nothing to restart
 copy "$SRC/storage/zorcam_storage.py" "$PREFIX/storage/zorcam_storage.py" 755 || true
 copy "$SRC/storage/zorcam_storage.py" "$PREFIX/gallery/zorcam_storage.py" 644 && RESTART_GALLERY=1 || true  # USB disks, state
+# $PREFIX/brand (the look of a build on top of the core: brand.json, theme.css, logo.svg, icons) is that build's own
+# installer's, never touched here: the gallery reads it when it starts, and that installer restarts the gallery on a change
 # page markup: the templates, CSS and JS are read once when the gallery starts (and the version hash in the address of a
 # CSS/JS file, /static/app.css?v=<hash>, and of an app icon, /apple-touch-icon.png?v=<hash>, is computed then), so a change
 # of any of them restarts it
@@ -394,6 +401,9 @@ fi
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/healthz || true)"
 if [ "$code" = 200 ]; then ok "gallery answers on port 80"
 else warn "gallery does not answer (HTTP $code): journalctl -u zorcam-nvr-gallery -n 30"; fi
+# the tunnel port (TUNNEL_PORT in zorcam_cloud.py): where frpc connects, only on localhost
+if ss -lnt 2>/dev/null | grep -q '127\.0\.0\.1:8081 '; then ok "gallery tunnel port listens on 127.0.0.1:8081 (for the Zorcam cloud)"
+else warn "nothing listens on 127.0.0.1:8081, the tunnel port of the gallery: journalctl -u zorcam-nvr-gallery -n 30"; fi
 
 echo
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"

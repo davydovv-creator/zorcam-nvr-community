@@ -26,10 +26,18 @@ import zorcam_config
 CLOUD_FILE = os.path.join(zorcam_config.CONFIG_DIR, "cloud.json")
 LOCK_FILE = CLOUD_FILE + ".lock"
 FRPC_CONFIG = "/dev/shm/zorcam_frpc.toml"
+# Туннель облака приходит на отдельный порт галереи (только 127.0.0.1): заголовкам облака (X-Zorcam-Identity и др.)
+# и адресам Яндекса галерея верит только на нём, а не «всем с 127.0.0.1» — иначе обратный прокси на самом Pi
+# превратил бы запросы из интернета в «свои»
+TUNNEL_PORT = 8081
 HEALTH_FILE = "/dev/shm/zorcam_health.json"  # проверки галереи («Состояние Zorcam»), пишет галерея
 CGROUPS = "/sys/fs/cgroup/system.slice"
 SERVICES = ("capture", "gallery", "go2rtc", "cloud")
 URL_RE = re.compile(r"https://[a-z0-9.-]+(:\d+)?")
+ADDRESS_FIELDS = {"url", "app_url", "frps_addr", "frps_port", "subdomain", "stun"}  # приходят из облака со статусом
+TUNNEL_NAME_RE = re.compile(r"[a-z0-9.-]+")  # frps_addr и subdomain: попадают в TOML frpc
+# STUN облака (host:port, порт 1-65535)
+STUN_RE = re.compile(r"[a-z0-9.-]+:(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])")
 
 try:  # python3-cryptography; без него облако недоступно, остальное работает
     from cryptography.exceptions import InvalidSignature
@@ -160,7 +168,7 @@ def finish_pairing(version=""):
         if status == 200 and reply.get("paired"):
             status, tok = call(data, "POST", "/api/device/token", {})
             if status == 200 and tok.get("token"):
-                for k in ("url", "app_url", "frps_addr", "frps_port", "subdomain", "cloud_key", "name"):
+                for k in ("url", "app_url", "frps_addr", "frps_port", "subdomain", "stun", "cloud_key", "name", "owner_name"):
                     data[k] = reply.get(k)
                 data.update(paired=True, token=tok["token"])
                 for k in ("code", "code_exp", "pair_url"):
@@ -177,11 +185,30 @@ def heartbeat(version=""):
     status, reply = call(data, "GET", "/api/device/status", version=version)
     if status == 401 or (status == 200 and not reply.get("paired")):
         return False
-    if status == 200 and reply.get("name") and reply["name"] != data.get("name"):
+    if status != 200:
+        return True
+    # имя устройства и отображаемое имя владельца аккаунта меняются в облаке: подтягиваем (старое облако owner_name не шлёт)
+    changed = {k: reply[k] for k in ("name", "owner_name")
+               if isinstance(reply.get(k), str) and reply[k] and reply[k] != data.get(k)}
+    # адрес устройства в облаке тоже может смениться (облако переехало на другой домен); негодное и пропавшее не берём
+    changed.update({k: reply[k] for k in ("url", "app_url")
+                    if isinstance(reply.get(k), str) and URL_RE.fullmatch(reply[k]) and reply[k] != data.get(k)})
+    for k in ("frps_addr", "subdomain"):
+        if isinstance(reply.get(k), str) and TUNNEL_NAME_RE.fullmatch(reply[k]) and reply[k] != data.get(k):
+            changed[k] = reply[k]
+    if isinstance(reply.get("stun"), str) and STUN_RE.fullmatch(reply["stun"]) and reply["stun"] != data.get("stun"):
+        changed["stun"] = reply["stun"]  # старое облако поля не шлёт: ничего не меняется
+    port = reply.get("frps_port")
+    if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536 and port != data.get("frps_port"):
+        changed["frps_port"] = port
+    if changed:
         with locked():
             fresh = load()
-            fresh["name"] = reply["name"]
+            fresh.update(changed)
             save(fresh)
+        moved = sorted(changed.keys() & ADDRESS_FIELDS)
+        if moved:  # в журнал сервиса zorcam-nvr-cloud (stdout); значения без токена туннеля, только адреса
+            print(f"cloud: the address from the cloud changed: {', '.join(f'{k}={changed[k]}' for k in moved)}", flush=True)
     return True
 
 
@@ -242,7 +269,7 @@ def frpc_config(data):
         f"name = {q(data['device_id'] + '-web')}",
         'type = "http"',
         'localIP = "127.0.0.1"',
-        "localPort = 80",
+        f"localPort = {TUNNEL_PORT}",
         f"subdomain = {q(data['subdomain'])}",
         "",
     ])
@@ -257,8 +284,9 @@ def _read(path):
 
 
 def health_report(version="", now=None, cgroups=CGROUPS, health_file=HEALTH_FILE):
-    """Самочувствие Pi для админки облака: система, сервисы, камеры, проверки галереи.
-    Без названий камер, адресов, паролей и записей — только числа, состояния и тексты проблем."""
+    """Самочувствие Pi для админки облака: система, сервисы, камеры, проверки галереи, сеть (через что подключена, включены
+    ли Wi-Fi и Bluetooth). Без названий камер, имени сети, адресов, названий интерфейсов, паролей и записей — только числа,
+    состояния и тексты проблем."""
     now = now or time.time()
     report = {"version": version, "edition": zorcam_config.edition(), "ts": now}
     uptime, loadavg = _read("/proc/uptime"), _read("/proc/loadavg")
@@ -281,6 +309,7 @@ def health_report(version="", now=None, cgroups=CGROUPS, health_file=HEALTH_FILE
     temp = _read("/sys/class/thermal/thermal_zone0/temp")
     if temp and temp.strip().isdigit():
         report["temp"] = round(int(temp) / 1000, 1)
+    report["network"] = zorcam_config.network_state()
 
     try:
         states = subprocess.run(["systemctl", "is-active", *(f"zorcam-nvr-{s}" for s in SERVICES)], capture_output=True,

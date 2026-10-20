@@ -143,7 +143,9 @@ status() {
 
 # ---------------------------------------------------------------- save
 save() {
-    local stamp dir out
+    local stamp dir out old_umask
+    old_umask="$(umask)"
+    umask 077  # the journal holds addresses and user names: the folder and the archive are for this user only
     stamp="$(date +%Y%m%d-%H%M)"
     dir="$(mktemp -d)/zorcam-nvr-debug-$stamp"
     out="$HOME/zorcam-nvr-debug-$stamp.tar.gz"
@@ -167,7 +169,9 @@ save() {
     # passwords never leave the Pi: mask any login:password@ in URLs, just in case
     sed -i -E 's#(rtsps?://[^:/@[:space:]]*):[^@[:space:]]*@#\1:****@#g' "$dir"/*.txt
     tar -czf "$out" -C "$(dirname "$dir")" "$(basename "$dir")"
+    chmod 600 "$out"  # an archive of the same minute left from before keeps its old rights otherwise
     rm -rf "$(dirname "$dir")"
+    umask "$old_umask"
     ok "$out ($(du -h "$out" | cut -f1))"
     echo "Copy it to your computer: scp admin@$(hostname -I | awk '{print $1}'):$out ."
 }

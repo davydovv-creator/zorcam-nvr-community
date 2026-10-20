@@ -24,7 +24,7 @@ section > h2 + .rec > form:first-child::before, section > h2 + .actions > :first
 .row.all + .reccols { border-top:1px solid var(--line); }
 .row .k { flex:1; min-width:0; white-space:pre-line; color:inherit; text-decoration:none; }
 .row .sub { display:block; font-size:13px; color:var(--muted); margin-top:1px; overflow-wrap:anywhere; }
-.row .v { text-align:right; max-width:55%; overflow-wrap:anywhere; color:var(--muted); font:13px var(--mono); }
+.row .v { text-align:right; max-width:55%; overflow-wrap:anywhere; color:var(--muted); font:13px var(--mono); white-space:pre-line; }
 .v.ok, .row .sub.ok { color:var(--ok); }
 .row .sub.warn { color:var(--warn); }
 .v.warn { color:var(--warn); }
@@ -37,6 +37,9 @@ section > h2 + .rec > form:first-child::before, section > h2 + .actions > :first
 .row .k.dim { color:var(--muted); }
 .row .v a.chev { color:var(--muted); font:22px/1 -apple-system,system-ui,sans-serif; margin-left:-2px; text-decoration:none; padding:8px 0 8px 4px; }
 .row.field { flex-direction:column; align-items:stretch; gap:8px; }
+.row.wide { flex-direction:column; align-items:stretch; gap:6px; }
+.row.wide .wide-head { display:flex; align-items:baseline; gap:12px; }
+.row.wide .wide-text { color:var(--muted); font:13px var(--mono); overflow-wrap:anywhere; }
 .row.field .k { font-size:15px; }
 .row.field input:not([type=checkbox]), .row.field select {
   width:100%; min-height:44px; padding:10px 12px; border:1px solid var(--btn); border-radius:2px; background:var(--panel);
@@ -75,6 +78,13 @@ input.switch:checked::before { transform:translateX(16px); }
   border:2px solid currentColor; border-right-color:transparent; animation:busy-spin 0.8s linear infinite; }
 @keyframes busy-spin { to { transform:rotate(360deg); } }
 .tag { margin-left:6px; font:13px var(--mono); color:var(--ok); }
+/* a camera found by the search that is already added: the panel is a dark desaturated green (--added), its text light
+   (the title above it stays on the page) */
+section.added { background:var(--added); border-color:var(--added); }
+section.added .row { color:#f3f3f1; }
+section.added .row::before { border-top-color:rgba(243,243,241,.2); }
+section.added .actions > button { background:var(--panel); border-color:var(--panel); color:var(--text); }
+section.added :focus-visible { outline-color:#f3f3f1; }
 .tip { font-size:13px; color:var(--muted); line-height:1.45; padding:11px 16px; }
 /* the footer of a group: under it, outside the white */
 .foot { margin:7px 16px 0; font-size:13px; line-height:1.4; color:var(--muted); }
@@ -96,8 +106,16 @@ input.switch:checked::before { transform:translateX(16px); }
 .row .k b { font-weight:600; }
 .signout { position:relative; margin:0; }
 .signout::before { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line); }
-.signout a { display:flex; align-items:center; min-height:44px; padding:11px 16px; color:var(--text);
+.signout a, .signout button { display:flex; align-items:center; min-height:44px; padding:11px 16px; color:var(--text);
   text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+.signout form { margin:0; }
+.signout button { width:100%; margin:0; border:none; border-radius:0; background:none; font:inherit; font-weight:400;
+  text-align:left; cursor:pointer; }
+/* "Skip" under the main button of a form (the change-password page): an underlined text action, not a second button */
+.skip { margin:12px 0 0; text-align:center; }
+.skip button { min-height:44px; padding:11px 16px; border:none; border-radius:0; background:none; color:var(--text); font:inherit;
+  text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; cursor:pointer; }
+.wrap > .loginlogo { margin-top:20px; }
 .grouphead { margin:36px 16px 0; font-size:13px; font-weight:600; }
 .grouphead + section { margin-top:28px; }
 section .actions { display:block; margin:0; }
@@ -177,6 +195,6 @@ details.tips .tip { background:var(--panel); border:1px solid var(--line); borde
   section .actions > a:hover, section .actions > form > button:hover, a.row.action:hover, details summary:hover {
     background:var(--fill);
   }
-  .signout a:hover, .actions > a:hover, .choice a:hover { background:var(--fill); }
+  .signout a:hover, .signout button:hover, .actions > a:hover, .choice a:hover { background:var(--fill); }
   .actions > button:hover, .choice a.primary:hover { background:#000; }
 }

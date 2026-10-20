@@ -27,6 +27,32 @@ VAPID_SUBJECT = os.environ.get("ZORCAM_PUSH_SUBJECT", "mailto:zorcamnvr@yandex.r
 GONE_REASONS = {"VapidPkHashMismatch", "BadDeviceToken", "Unregistered", "ExpiredSubscription"}
 TTL = 600  # сек: сколько push-сервис хранит уведомление, если телефон не в сети
 RECORD_SIZE = 4096
+# push-сервисы браузеров: адрес подписки приходит от клиента, и устройство само шлёт на него запрос — любой другой
+# хост был бы запросом из домашней сети по выбору пользователя (SSRF)
+PUSH_HOSTS = ("fcm.googleapis.com",)  # Chrome, Edge, Android
+PUSH_SUFFIXES = (".push.apple.com", ".push.services.mozilla.com", ".notify.windows.com")  # Safari, Firefox, Edge
+
+
+def allowed_endpoint(endpoint):
+    """https, без логина в адресе, хост — известный push-сервис."""
+    try:
+        u = urlparse(endpoint)
+        host = (u.hostname or "").lower()
+        port = u.port
+    except (ValueError, AttributeError):
+        return False
+    return (u.scheme == "https" and not u.username and not u.password and port in (None, 443)
+            and (host in PUSH_HOSTS or host.endswith(PUSH_SUFFIXES)))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Без перенаправлений: push-сервис не должен отправить запрос устройства на другой адрес."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def b64url(data):
@@ -97,9 +123,19 @@ class PushService:
         try:
             with open(SUBSCRIPTIONS_FILE) as f:
                 data = json.load(f)
-            return {k: v for k, v in data.items() if isinstance(v, dict)}
+            subs = {k: v for k, v in data.items() if isinstance(v, dict)}
         except (OSError, ValueError):
             return {}
+        # подписки прежних версий принимались с любым https-адресом: чужой хост — удалить сразу
+        kept = {k: v for k, v in subs.items() if allowed_endpoint(k)}
+        for endpoint in subs.keys() - kept.keys():
+            print(f"push: subscription for {urlparse(endpoint).hostname} dropped: not a known push service", flush=True)
+        if len(kept) != len(subs):
+            try:
+                _write_private(SUBSCRIPTIONS_FILE, json.dumps(kept).encode())
+            except OSError as e:
+                print(f"push: cannot save subscriptions: {e}", flush=True)
+        return kept
 
     def _save(self):
         # вызывается под self.lock
@@ -112,9 +148,9 @@ class PushService:
         try:
             endpoint = sub["endpoint"]
             keys = {"p256dh": sub["keys"]["p256dh"], "auth": sub["keys"]["auth"]}
-            if urlparse(endpoint).scheme != "https" or len(b64url_decode(keys["p256dh"])) != 65:
+            if not allowed_endpoint(endpoint) or len(b64url_decode(keys["p256dh"])) != 65:
                 return False
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             return False
         entry = {"keys": keys, "label": label[:200], "user": user, "lang": lang, **({"pick": pick} if pick else {})}
         with self.lock:
@@ -161,7 +197,7 @@ class PushService:
             "Authorization": self._vapid_header(endpoint),
         })
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with _OPENER.open(req, timeout=15) as resp:
                 return resp.status, ""
         except urllib.error.HTTPError as e:
             try:  # Apple объясняет отказ: {"reason": "VapidPkHashMismatch"}
@@ -182,6 +218,10 @@ class PushService:
                        if (only is None or e == only) and (users is None or s.get("user", "") in users)]
         delivered = 0
         for endpoint, sub in targets:
+            if not allowed_endpoint(endpoint):  # подписка из файла, куда её положили в обход add()
+                self.remove(endpoint)
+                log(f"push: subscription for {urlparse(endpoint).hostname} removed: not a known push service")
+                continue
             body = message(sub) if callable(message) else message
             status, reason = self.send_one(endpoint, sub["keys"], body)
             # 404/410 — подписка отозвана браузером; VapidPkHashMismatch — сделана с ключом другой установки

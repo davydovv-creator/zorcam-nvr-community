@@ -124,3 +124,15 @@ def test_memory_events_file(tmp_path):
     path.write_text("low 0\nhigh 42\nmax 0\noom 0\n")
     assert diagnose.memory_events(str(path))["high"] == 42
     assert diagnose.memory_events(str(tmp_path / "missing")) == {}
+
+
+def test_gallery_memory_limit_on_file_cache_is_normal():
+    """The gallery reaches MemoryHigh on the page cache of the clips it sends (seen 17.10.2026: high 828, anon 55 MB)."""
+    mb = 2**20
+    logs = {**HEALTHY, "memory_events": {"zorcam-nvr-gallery": {"high": 828}},
+            "memory_stat": {"zorcam-nvr-gallery": {"anon": 55 * mb, "file": 23 * mb}}}
+    level, text = by_area(diagnose.analyze(logs))["Gallery memory"]
+    assert level == diagnose.OK and "828" in text and "55 MB" in text
+    logs["memory_stat"]["zorcam-nvr-gallery"]["anon"] = 150 * mb
+    assert by_area(diagnose.analyze(logs))["Gallery memory"][0] == diagnose.WARN
+    assert "Gallery memory" not in by_area(diagnose.analyze(HEALTHY))

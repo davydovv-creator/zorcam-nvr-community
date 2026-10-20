@@ -14,19 +14,25 @@ var timelapse = (function() {
   var cur = -1, goal = 0, speed = 1, playing = false, active = false, dragging = false, started = false;
   var last = 0, stalled = 0, raf = 0, token = 0, period = 'today', motions = [], marks = [], markBox = null, relayout = 0;
   // pos: where frame j stands on the strip and the slider, in frames from the first one; a pause in the recording
-  // (the camera was off) takes its real length there, so the strip shows it as a gap. total: pos of the last frame
-  var pos = null, total = 0;
+  // (the camera was off) takes its real length there, so the strip shows it as a gap. total: the end of the strip
+  var pos = null, total = 0, ival = 0;  // ival: the snapshot interval of the period, seconds
+  // the edges of the day: the camera was off from midnight to the first frame (lead) or from the last frame to the end of
+  // the day / to now (tail); then pos[0] > 0 and total > pos[last]. t0, tEnd: the time of the strip's two ends; nowT: the Pi's now
+  var lead = false, tail = false, t0 = 0, tEnd = 0, nowT = 0;
+  // standing in a gap (the player walks it at the pace of the frames, a grey screen): gapTo is the frame after it, gp the
+  // place in pos units; -1 outside a gap
+  var gapTo = -1, gp = -1;
   var videos = [], clipLen = 10, vlink = null;  // videos: {n: name, t: start} of the period, for the link over the strip
   var daysBox = root.querySelector('.tl-days'), calBox = root.querySelector('.tl-cal');
   var day = '', days = [], info = {}, cells = {}, today = '', daysRaw = '', daysAt = 0;  // day: the chosen calendar day, '' = a period
   var LANG = document.documentElement.lang || 'en';
-  try { day = localStorage.getItem('zorcam_tl_day') || ''; } catch (e) {}
-  // opened from a motion push (?at=YYYYMMDD_HHMMSS, checked by the server): that day, paused at the motion; the day
-  // remembered in localStorage stays as it was
+  // opened from a motion push (?at=YYYYMMDD_HHMMSS, checked by the server): that day, paused at the motion
   var at = /^\d{8}_\d{6}$/.test(root.getAttribute('data-at') || '') ? root.getAttribute('data-at') : '';
   var note = root.querySelector('.tl-note'), modal = root.querySelector('.tl-modal');
   var modalBody = modal.querySelector('.tl-modal-body'), modalTime = modal.querySelector('.tl-modal-time');
   var modalDl = modal.querySelector('.tl-modal-dl'), modalFrom = null;
+  var clipPrev = modal.querySelector('.tl-clip-prev'), clipNext = modal.querySelector('.tl-clip-next');
+  var batch = [], batchAt = 0;  // the clips of the dot (earlier first) and the open one
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function stamp(t) {
@@ -40,7 +46,10 @@ var timelapse = (function() {
     return Date.UTC(+n.substr(0, 4), +n.substr(4, 2) - 1, +n.substr(6, 2), +n.substr(9, 2), +n.substr(11, 2), +n.substr(13, 2)) / 1000;
   }
   function isMotion(n) { return n.charCodeAt(19) === 95; }  // '_' after the milliseconds; '.' otherwise
-  function frac(j) { return total ? pos[j] / total : 0; }  // 0 ... 1 along the strip
+  // the place and the time of frame k on the strip; -1 is the start of the strip, frames.length its end (the edges of the gaps)
+  function pAt(k) { return k < 0 ? 0 : k >= frames.length ? total : pos[k]; }
+  function tAt(k) { return k < 0 ? (lead ? t0 : times[0]) : k >= frames.length ? (tail ? tEnd : times[k - 1]) : times[k]; }
+  function frac(j) { return total ? pAt(j) / total : 0; }  // 0 ... 1 along the strip
   // the frame nearest to the place p (in the units of pos); inside a gap — the nearer of its two edges
   function frameAt(p) {
     var lo = 0, hi = frames.length - 1;
@@ -56,10 +65,12 @@ var timelapse = (function() {
     hideLink();
     var T0 = times[j], w = strip.clientWidth;
     if (!isMotion(frames[j]) || !w) return false;
-    var ex = 7 * (times[frames.length - 1] - times[0]) / w;
+    var ex = 7 * (tAt(frames.length) - tAt(-1)) / w;
     var found = videos.filter(function(v) { return T0 >= v.t - 5 - ex && T0 <= v.t + clipLen + 30 + ex; });
     if (!found.length) return false;
     var more = found.length > MAX_LINKS;
+    // the whole batch of the dot, earlier first: the window of a clip turns the pages through it
+    var all = found.slice().sort(function(p, q) { return p.t - q.t; });
     found.sort(function(p, q) { return Math.abs(T0 - p.t) - Math.abs(T0 - q.t); });
     found = found.slice(0, MAX_LINKS).sort(function(p, q) { return p.t - q.t; });
     var box = document.createElement('div');
@@ -73,7 +84,8 @@ var timelapse = (function() {
       if (clip) a.addEventListener('click', function(e) {  // the clip opens over the player; a new tab keeps the page
         if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
         e.preventDefault();
-        openClip(clip, a);
+        var k = all.map(function(v) { return v.n; });
+        openClip(clip, a, k, k.indexOf(clip));
       });
       box.appendChild(a);
     }
@@ -92,6 +104,15 @@ var timelapse = (function() {
     box.style.bottom = 'calc(100% + ' + Math.round(strip.getBoundingClientRect().top - stage.getBoundingClientRect().bottom + 8) + 'px)';
     vlink = box;
     return true;
+  }
+  // the place p (pos units) strictly inside a gap: the frame after it (frames.length for the tail); -1 if p is on a frame
+  // or between close ones
+  function gapAt(p) {
+    if (lead && p < pos[0]) return 0;
+    if (tail && p > pos[frames.length - 1]) return frames.length;
+    var lo = 0, hi = frames.length - 1;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (pos[mid] < p) lo = mid + 1; else hi = mid; }
+    return lo && p > pos[lo - 1] && p < pos[lo] && pos[lo] - pos[lo - 1] > 1 ? lo : -1;
   }
   function say(text) { msg.textContent = text || ''; }
 
@@ -116,7 +137,14 @@ var timelapse = (function() {
       try { localStorage.setItem(RATIO_KEY, String(r)); } catch (e) {}
     });
   }
-  function openClip(name, from) {
+  // the arrows stand at the middle of the picture (not of the whole body, where the scale of motion is under it)
+  function placeArrows() {
+    var v = modalBody.querySelector('video') || modalBody.querySelector('.tl-modal-ph');
+    var top = v && v.offsetHeight ? v.offsetTop + v.offsetHeight / 2 : modalBody.offsetHeight / 2;
+    clipPrev.style.top = clipNext.style.top = top + 'px';
+  }
+  function openClip(name, from, list, idx, quiet) {
+    if (list) { batch = list; batchAt = Math.max(0, idx); }
     var mine = ++clipToken, ts = timeOf(name), url = '/watch/' + encodeURIComponent(cam) + '/' + encodeURIComponent(name);
     pause();
     modalFrom = from || null;
@@ -125,19 +153,30 @@ var timelapse = (function() {
     ph.className = 'tl-modal-ph';
     ph.style.aspectRatio = String(clipRatio());
     modalBody.appendChild(ph);
-    modalTime.textContent = stamp(ts) + (zone ? ' ' + zone : '');
+    modalTime.textContent = stamp(ts) + (zone ? ' ' + zone : '') + (batch.length > 1 ? ' · ' + (batchAt + 1) + '/' + batch.length : '');
+    clipPrev.hidden = batch.length < 2 || batchAt <= 0;
+    clipNext.hidden = batch.length < 2 || batchAt >= batch.length - 1;
+    placeArrows();
     modalDl.href = '/vid/' + encodeURIComponent(cam) + '/' + encodeURIComponent(name + '.mp4') + '?dl=1';
     modal.hidden = false;
     document.body.classList.add('modal-open');
-    modal.querySelector('.tl-modal-x').focus();
+    var cur = document.activeElement;
+    if (!quiet || !cur || !modal.contains(cur) || cur.hidden) modal.querySelector('.tl-modal-x').focus();
     fetch(url + '?frag=1', { credentials: 'same-origin' })
       .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
       .then(function(html) {
         if (mine !== clipToken) return;
         modalBody.innerHTML = html;  // built by the server from the escaped parts (watch_media)
         var video = modalBody.querySelector('video');
-        if (video) fitClip(video);
+        if (video) {
+          // without the poster: the clip is opened by a tap and plays at once, the poster would only flash before it
+          video.removeAttribute('poster');
+          fitClip(video);
+          video.addEventListener('loadedmetadata', placeArrows);
+        }
+        placeArrows();
         initMotionClip(modalBody);
+        if (video) { var pl = video.play(); if (pl && pl.catch) pl.catch(function() {}); }
       })
       .catch(function() {
         if (mine !== clipToken) return;
@@ -157,6 +196,35 @@ var timelapse = (function() {
     if (modalFrom && document.contains(modalFrom)) modalFrom.focus();
     modalFrom = null;
   }
+  // d = -1: the earlier clip of the batch, 1: the later one
+  function turnClip(d) {
+    var k = batchAt + d;
+    if (modal.hidden || k < 0 || k >= batch.length) return;
+    batchAt = k;
+    openClip(batch[k], modalFrom, null, 0, true);
+  }
+  // a swipe over the clip: to the left (the finger goes right to left) — the later one, to the right — the earlier one;
+  // not from the scale of motion and not from the bar of the native controls at the bottom of the video
+  var swipe = null;
+  modalBody.addEventListener('touchstart', function(e) {
+    swipe = null;
+    if (e.touches.length !== 1 || batch.length < 2) return;
+    var tc = e.touches[0], el = e.target;
+    if (el.closest && el.closest('.mscale')) return;
+    if (el.tagName === 'VIDEO' && tc.clientY > el.getBoundingClientRect().bottom - 56) return;
+    swipe = { x: tc.clientX, y: tc.clientY };
+  }, { passive: true });
+  modalBody.addEventListener('touchmove', function(e) { if (e.touches.length > 1) swipe = null; }, { passive: true });
+  modalBody.addEventListener('touchend', function(e) {
+    var s = swipe, tc = e.changedTouches[0];
+    swipe = null;
+    if (!s || !tc) return;
+    var dx = tc.clientX - s.x, dy = tc.clientY - s.y;
+    if (Math.abs(dx) >= 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) turnClip(dx < 0 ? 1 : -1);
+  }, { passive: true });
+  modalBody.addEventListener('touchcancel', function() { swipe = null; }, { passive: true });
+  clipPrev.addEventListener('click', function() { turnClip(-1); });
+  clipNext.addEventListener('click', function() { turnClip(1); });
   modal.addEventListener('click', function(e) {  // the dark field around the clip, the cross
     if (e.target === modal || (e.target.closest && e.target.closest('.tl-modal-x'))) closeClip();
   });
@@ -215,6 +283,7 @@ var timelapse = (function() {
   }
   // draws the goal frame if it has arrived; a frame that failed is passed over
   function present() {
+    if (gapTo >= 0) return false;  // the grey screen of a gap stays until the player leaves it
     var e = cache[goal];
     while (e && e.state === 'bad') {
       if (goal >= frames.length - 1) { cur = goal; pause(); return false; }  // the last frame is gone: the end
@@ -233,12 +302,40 @@ var timelapse = (function() {
     return true;
   }
 
+  // the gap before frame k at the place p: a grey screen with the notice, the time goes on; the frames after it load meanwhile
+  function showGap(k, p) {
+    gapTo = k; gp = p; goal = Math.min(k, frames.length - 1); cur = k - 1; stalled = 0;
+    ctx.fillStyle = '#6e6e6a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    timeEl.textContent = stamp(Math.min(tAt(k), tAt(k - 1) + (p - pAt(k - 1)) * ival)) + (zone ? ' ' + zone : '');
+    root.classList.remove('motion');
+    if (!dragging) range.value = Math.round(p);
+    range.style.setProperty('--p', p / total * 100 + '%');
+    say(T['tl.no_frames']);
+    pump();
+  }
+  function stepGap(ts) {
+    var p = gp + stepOf();
+    if (p < pAt(gapTo)) { showGap(gapTo, p); last = ts; return; }
+    if (gapTo >= frames.length) { showGap(gapTo, total); pause(); return; }  // the tail is walked: grey at the end, stopped
+    goal = gapTo; gapTo = -1; gp = -1;  // the gap is over: on to the frame after it
+    pump();
+    if (present()) last = ts;
+  }
   function tick(ts) {
     raf = playing && active ? requestAnimationFrame(tick) : 0;
     if (ts - last < 1000 / (FPS * Math.min(speed, 1)) - 3) return;
+    if (gapTo >= 0) { stepGap(ts); return; }
     if (cur === goal) {
-      if (cur >= frames.length - 1) { pause(); return; }
-      goal = Math.min(frames.length - 1, cur + stepOf());
+      if (cur >= frames.length - 1) {
+        if (!tail) { pause(); return; }
+        gapTo = frames.length; gp = pos[cur]; stepGap(ts);  // the camera was off after the last frame
+        return;
+      }
+      var nx = Math.min(frames.length - 1, cur + stepOf());
+      for (var i = cur; i < nx; i++) if (pos[i + 1] - pos[i] > 1) { nx = i; break; }  // never skip over the start of a gap
+      if (nx === cur) { gapTo = cur + 1; gp = pos[cur]; stepGap(ts); return; }
+      goal = nx;
       pump();
     }
     if (present()) { last = ts; return; }
@@ -248,7 +345,8 @@ var timelapse = (function() {
   function play() {
     if (!frames.length) return;
     hideLink();
-    if (cur >= frames.length - 1) seek(0);
+    // from the true end (the tail walked, or the last frame with no tail) the play starts again; mid-tail it goes on
+    if (gapTo >= frames.length ? gp >= total : !tail && cur >= frames.length - 1) seek(0);
     playing = true;
     root.classList.add('playing');
     playBtn.setAttribute('aria-label', T['tl.pause']);
@@ -262,6 +360,7 @@ var timelapse = (function() {
   }
   function seek(j) {
     if (!frames.length) return;
+    gapTo = -1; gp = -1;
     goal = Math.max(0, Math.min(frames.length - 1, j));
     setPosition(goal);
     last = 0;
@@ -314,7 +413,7 @@ var timelapse = (function() {
     times = new Float64Array(n);
     pos = new Float64Array(n);
     for (i = 0; i < n; i++) times[i] = timeOf(frames[i]);
-    var every = snapshotInterval();
+    var every = ival = snapshotInterval();
     function span(cls, a, b) {
       var m = document.createElement('span');
       m.className = cls;
@@ -322,17 +421,28 @@ var timelapse = (function() {
       m.style.width = (b - a) / total * 100 + '%';
       strip.appendChild(m);
     }
+    var limit = every ? Math.max(GAP_INTERVALS * every, GAP_MIN) : 0;
+    // the day starts at midnight: the time before the first frame is a gap only if the camera recorded on an earlier day
+    // (otherwise it did not exist yet, or the old records are cleaned up); the day ends at 23:59:59, today — now
+    var dstr = frames[0].substr(0, 4) + '-' + frames[0].substr(4, 2) + '-' + frames[0].substr(6, 2);
+    t0 = Math.floor(times[0] / 86400) * 86400;
+    tEnd = nowT ? Math.min(t0 + 86399, nowT) : times[n - 1];
+    lead = !!limit && times[0] - t0 > limit && days.some(function(it) { return it.d < dstr && it.frames > 0; });
+    tail = !!limit && tEnd - times[n - 1] > limit;
+    if (lead) pos[0] = (times[0] - t0) / every;
     for (i = 1; i < n; i++) {
       var gap = times[i] - times[i - 1];
-      pos[i] = pos[i - 1] + (every && gap > Math.max(GAP_INTERVALS * every, GAP_MIN) ? gap / every : 1);
+      pos[i] = pos[i - 1] + (every && gap > limit ? gap / every : 1);
     }
-    total = n > 1 ? pos[n - 1] : 0;
-    for (i = 1; i < n; i++) if (pos[i] - pos[i - 1] > 1) span('g', pos[i - 1], pos[i]);
-    for (i = 1; i < n; i++) {
-      var h0 = Math.floor(times[i - 1] / 3600), h1 = Math.floor(times[i] / 3600);
+    total = pos[n - 1] + (tail ? (tEnd - times[n - 1]) / every : 0);
+    // the gap before frame k lies between k - 1 and k; before the first and after the last one only at the edges of the day
+    var kFrom = lead ? 0 : 1, kTo = tail ? n : n - 1;
+    for (i = kFrom; i <= kTo; i++) if (pAt(i) - pAt(i - 1) > 1) span('g', pAt(i - 1), pAt(i));
+    for (i = kFrom; i <= kTo; i++) {
+      var ta = tAt(i - 1), tb = tAt(i), h0 = Math.floor(ta / 3600), h1 = Math.floor(tb / 3600);
       for (var h = h0 + 1; h <= h1; h++) {  // every hour boundary between the two frames
-        var t = Math.max(times[i - 1], Math.min(times[i], h * 3600));
-        var at = pos[i - 1] + (times[i] > times[i - 1] ? (t - times[i - 1]) / (times[i] - times[i - 1]) : 1) * (pos[i] - pos[i - 1]);
+        var t = Math.max(ta, Math.min(tb, h * 3600));
+        var at = pAt(i - 1) + (tb > ta ? (t - ta) / (tb - ta) : 1) * (pAt(i) - pAt(i - 1));
         marks.push({ p: at, h: h % 24, day: h % 24 === 0, t: h * 3600 });
       }
     }
@@ -390,7 +500,7 @@ var timelapse = (function() {
     }
     // the first and the last frame: a line like the hour lines and the time under it (a date too when the period
     // crosses midnight), the first label grows to the right of its line and the last to the left, so that none leaves the strip
-    var a = stamp(times[0]), b = stamp(times[frames.length - 1]);
+    var a = stamp(tAt(-1)), b = stamp(tAt(frames.length));
     var dates = a.slice(9, 14) !== b.slice(9, 14);
     var end = function(s) { return (dates ? s.slice(9, 14) + ' ' : '') + s.slice(0, 5); };
     var first = { p: 0 }, finish = { p: total || 1 };
@@ -522,24 +632,20 @@ var timelapse = (function() {
     return lo && t - times[lo - 1] < times[lo] - t ? lo - 1 : lo;
   }
 
-  // p: a period (always today: since midnight); d: a calendar day YYYY-MM-DD instead of it. The choice is remembered;
-  // mode 'at': the day of a push, 'gone': today instead of it, the notice stays — neither is remembered
+  // p: a period (always today: since midnight); d: a calendar day YYYY-MM-DD instead of it.
+  // mode 'at': the day of a push, 'gone': today instead of it, the notice stays
   function load(p, d, mode) {
     var mine = ++token;
     d = d || '';
     day = d;
     if (!mode) note.textContent = '';
-    try {
-      if (mode) { /* the remembered day stays */ }
-      else if (d) { localStorage.setItem('zorcam_tl_day', d); } else { localStorage.removeItem('zorcam_tl_day'); }
-    } catch (e) {}
     if (!d) period = p;
     markDay();
     if (Date.now() - daysAt > 300000) fetchDays().catch(function() {});  // the list ages: midnight, new videos
     pause();
     Object.keys(cache).forEach(dropFrame);
     hideLink(); videos = [];
-    frames = []; times = null; pos = null; total = 0; marks = []; markBox = null; cur = -1; goal = 0; stalled = 0;
+    frames = []; times = null; pos = null; total = 0; lead = tail = false; marks = []; markBox = null; cur = -1; goal = 0; stalled = 0; gapTo = -1; gp = -1;
     resetSpeed(); labelSpeeds();
     range.max = 0; range.value = 0; range.disabled = true;
     strip.innerHTML = ''; timeEl.textContent = '';
@@ -553,6 +659,7 @@ var timelapse = (function() {
         videos = (data.videos || []).map(function(n) { return { n: n, t: timeOf(n) }; });
         clipLen = data.clip || 10;
         frames = data.frames; base = data.base; zone = (data.tz && data.tz.label) || '';
+        nowT = data.now || 0;
         if (mode === 'at' && !frames.length) {  // the day is gone (cleanup): today and a notice
           note.textContent = T['tl.deleted'].replace('{when}', at.substr(6, 2) + '.' + at.substr(4, 2) + ' ' +
             at.substr(9, 2) + ':' + at.substr(11, 2));
@@ -589,7 +696,8 @@ var timelapse = (function() {
   range.addEventListener('touchstart', hold, { passive: true });
   range.addEventListener('input', function() {
     hold();
-    var v = parseInt(range.value, 10), j = frameAt(v);
+    var v = parseInt(range.value, 10), j = frameAt(v), k = gapAt(v);
+    if (k >= 0) { showGap(k, v); return; }  // inside a gap: stands there, grey
     // a step of the keys inside a gap would snap back to the same frame: over the gap, to the next one
     if (j === cur && v !== Math.round(pos[cur])) j = Math.max(0, Math.min(frames.length - 1, cur + (v > pos[cur] ? 1 : -1)));
     seek(j);
@@ -609,6 +717,8 @@ var timelapse = (function() {
       var d = Math.abs(frac(m) * r.width - x);
       if (d < best) { best = d; j = m; }
     });
+    var k = best === 14 ? gapAt(x / r.width * total) : -1;
+    if (k >= 0 && frac(k) * r.width - x > 3 && x - frac(k - 1) * r.width > 3) { pause(); showGap(k, x / r.width * total); return; }
     seek(j);
     if (showLink(j)) pause();  // the link would be stale as soon as the frames moved on
   });
@@ -627,6 +737,10 @@ var timelapse = (function() {
   document.addEventListener('keydown', function(e) {
     if (!modal.hidden) {
       if (e.key === 'Escape') { closeClip(); e.preventDefault(); }
+      else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        turnClip(e.key === 'ArrowLeft' ? -1 : 1);
+        e.preventDefault();
+      }
       return;
     }
     if (!active || e.altKey || e.ctrlKey || e.metaKey) return;
@@ -661,11 +775,12 @@ var timelapse = (function() {
       if (started) return;
       started = true;
       say(T['tl.loading']);
-      // the calendar first (a stored day that has no snapshots any more falls back to the period); it is cached on the Pi
+      // the calendar first (it is cached on the Pi): the newest day that has snapshots opens, today as the period
       var go = function() {
         if (at) { day = at.substr(0, 4) + '-' + at.substr(4, 2) + '-' + at.substr(6, 2); load(period, day, 'at'); return; }
-        if (day && !(info[day] && info[day].frames)) day = '';
-        load(period, day);
+        var newest = '';
+        days.forEach(function(it) { if (it.frames > 0) newest = it.d; });
+        load(period, newest === today ? '' : newest);
       };
       fetchDays().then(go, go);
     }
