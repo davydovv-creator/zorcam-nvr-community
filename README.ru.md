@@ -374,10 +374,10 @@ Zorcam ставится на чистую Pi. Повторный запуск с
 cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q main && git pull -q --ff-only && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
 ```
 
-Релиз (здесь `0.5.3`):
+Релиз (здесь `0.5.4`):
 
 ```bash
-cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q 0.5.3 && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
+cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q 0.5.4 && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
 ```
 
 `--force` забирает тег релиза, который перенесли после того, как вы его скачали: без него git отказывается, и следующие шаги не выполняются. Последняя строка — коммит, который теперь установлен, а версию показывает «Настройки» → «Состояние». Если команда напечатала только ошибку git, ничего не установлено: исправьте её и запустите команду снова.

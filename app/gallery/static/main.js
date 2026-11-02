@@ -120,6 +120,8 @@
     }
     var hls = null, pc = null, fallbackTimer = null, retryTimer = null;
     var active = false, lastTime = -1, lastProgress = 0;
+    // the system controls (play button, dimmed picture) go away a second after the last touch, as in a clip (app.js)
+    autoHideControls(video);
 
     function setStatus(text, on) {
       status.textContent = text;

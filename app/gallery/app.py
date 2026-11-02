@@ -58,7 +58,7 @@ except ImportError as e:
 
 DEBUG = os.environ.get("ZORCAM_DEBUG") == "1"  # app/debug.sh on
 CHILD_ENV = {k: v for k, v in os.environ.items() if k != "NOTIFY_SOCKET"}  # иначе systemctl шлёт свой статус в наш сокет
-VERSION = "0.5.3"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
+VERSION = "0.5.4"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
 
 
 def installed_build():

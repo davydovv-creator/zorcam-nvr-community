@@ -703,6 +703,17 @@ def test_clip_controls_hide_a_second_after_the_last_touch(server, cookies):
         assert piece in js, piece
 
 
+
+def test_live_controls_hide_a_second_after_the_last_touch(server, cookies):
+    """Live (the grid, one camera, the embedded player) hides the system controls of a playing camera the same way
+    as a clip: the player of main.js calls autoHideControls of app.js, and app.js comes first."""
+    for path in ("/?tab=live", "/?tab=live&cam=front", "/?tab=live&cam=front&embed=1"):
+        body = request(server, "GET", path, cookie=cookies["bob"])[2]
+        scripts = re.findall(r'src="/static/(\w+)\.js\?v=\w+"', body)
+        assert scripts.index("app") < scripts.index("main"), path
+        js = assets(server, body)
+        assert "var CONTROLS_HIDE_MS = 1000;" in js and "    autoHideControls(video);" in js, path
+
 def test_video_thumbnail_url_changes_with_the_poster(server, cookies):
     """The browser keeps thumbnails for a day: a poster replaced by a placeholder gets a new thumbnail URL."""
     name = app.list_videos("front")[0]

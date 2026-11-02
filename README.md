@@ -374,10 +374,10 @@ Run the same script on a fresh copy of the program. The latest version (`main`):
 cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q main && git pull -q --ff-only && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
 ```
 
-A release (here `0.5.3`):
+A release (here `0.5.4`):
 
 ```bash
-cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q 0.5.3 && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
+cd ~/zorcam-nvr && git fetch --tags --force origin && git checkout -q 0.5.4 && ./app/install.sh 2>&1 | tail -n 60; git log -1 --oneline
 ```
 
 `--force` takes a release tag that was moved after you fetched it; without it git refuses, and the steps after it do not run. The last line shows the commit that is now installed, and Settings → Status shows the version. If the command prints only an error of git, nothing was installed: fix it and run the command again.

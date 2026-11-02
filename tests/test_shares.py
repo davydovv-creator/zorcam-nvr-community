@@ -321,6 +321,15 @@ def test_the_page_of_a_link_is_one_player(server, cookies, store):
     assert "liveBase" not in request(server, "GET", "/?tab=live&cam=yard&embed=1", cookie=cookies["admin"])[2]
 
 
+
+def test_the_controls_of_a_link_hide_a_second_after_the_last_touch(server, cookies, store):
+    """The page of a link is the same Live player: its system controls go away a second after the last touch."""
+    body = request(server, "GET", f"/s/{make_share(server, cookies)}")[2]
+    scripts = re.findall(r'src="/static/(\w+)\.js\?v=\w+"', body)
+    assert scripts.index("app") < scripts.index("main")
+    js = "".join(request(server, "GET", n)[2] for n in re.findall(r'src="(/static/\w+\.js\?v=\w+)"', body))
+    assert "var CONTROLS_HIDE_MS = 1000;" in js and "    autoHideControls(video);" in js
+
 def test_the_manifest_of_a_link(server, cookies, store):
     token = make_share(server, cookies, camera="front")
     status, headers, body = request(server, "GET", f"/s/{token}/manifest.webmanifest")
