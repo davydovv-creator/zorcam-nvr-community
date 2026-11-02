@@ -230,9 +230,9 @@ def send_event(camera, camera_name, name, viewers, ts=None):
     return status
 
 
-def verify_identity(token, data=None):
+def verify_identity(token):
     """Имя локального пользователя из X-Zorcam-Identity, если токен подписан облаком, для этого Pi и не истёк."""
-    data = data if data is not None else load()
+    data = load()
     if not token or not data.get("paired") or not data.get("cloud_key") or Ed25519PrivateKey is None:
         return None
     try:

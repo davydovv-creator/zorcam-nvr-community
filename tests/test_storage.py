@@ -107,42 +107,18 @@ def test_a_missing_disk_means_the_sd_card(tmp_path, monkeypatch):
     assert (tmp_path / "state.json").stat().st_mtime_ns == before
 
 
-def mountinfo_line(n, path, options):
-    return f"{n} 1 8:1 /recordings {path} {options} shared:1 - ext4 /dev/sda1 rw,commit=60\n"
-
-
-def fake_mounts(tmp_path, monkeypatch, mounted):
-    """mounted: {path: options}; the `mount` and `umount` commands change the fake /proc/self/mountinfo."""
-    info = tmp_path / "mountinfo"
+def fake_mounts(monkeypatch, mounted):
+    """mounted: the set of mount points; the `mount` command adds to it."""
     ran = []
-
-    def write():
-        info.write_text("".join(mountinfo_line(i, p, o) for i, (p, o) in enumerate(mounted.items())))
 
     def run(cmd, check=True):
         ran.append(cmd)
         if cmd[0] == "mount":
-            opts = cmd[2].split(",") if cmd[1] == "-o" else []
-            if "remount" in opts:
-                mounted[cmd[-1]] = "rw,relatime," + ",".join(o for o in opts if o not in ("remount", "bind"))
-            elif cmd[1] == "--bind":
-                mounted[cmd[-1]] = "rw,relatime"
-            else:
-                mounted[cmd[-1]] = "rw," + ",".join(opts)
-            write()
+            mounted.add(cmd[-1])
         return ""
-    write()
-    monkeypatch.setattr(zorcam_storage, "MOUNTINFO", str(info))
     monkeypatch.setattr(zorcam_storage, "run", run)
     monkeypatch.setattr(zorcam_storage, "is_mount", lambda path: path in mounted)
     return ran
-
-
-def test_mount_options_come_from_mountinfo(tmp_path, monkeypatch):
-    fake_mounts(tmp_path, monkeypatch, {"/mnt/d": "rw,nosuid,nodev,noexec,noatime", "/mnt/e": "rw,relatime"})
-    assert zorcam_storage.mount_options("/mnt/d") == {"rw", "nosuid", "nodev", "noexec", "noatime"}
-    assert zorcam_storage.mount_options("/mnt/e") == {"rw", "relatime"}
-    assert zorcam_storage.mount_options("/mnt/none") is None
 
 
 def test_the_disk_is_mounted_without_devices_setuid_and_exec(tmp_path, monkeypatch):
@@ -154,8 +130,8 @@ def test_the_disk_is_mounted_without_devices_setuid_and_exec(tmp_path, monkeypat
     monkeypatch.setattr(zorcam_storage, "svc_ids", lambda user=None: None)
     monkeypatch.setattr(zorcam_storage, "set_state", lambda *a, **k: None)
     (tmp_path / "recordings").mkdir()
-    mounted = {}
-    ran = fake_mounts(tmp_path, monkeypatch, mounted)
+    mounted = set()
+    ran = fake_mounts(monkeypatch, mounted)
     monkeypatch.setattr(zorcam_storage, "is_mount", lambda path: path in mounted and path != str(tmp_path / "sd"))
     zorcam_storage.attach({"uuid": "u-1", "model": "T7"})
     disk_mount = next(c for c in ran if c[:2] == ["mount", "-o"] and "UUID=u-1" in c)
@@ -163,17 +139,8 @@ def test_the_disk_is_mounted_without_devices_setuid_and_exec(tmp_path, monkeypat
     assert ["mount", "-o", "remount,bind,nodev,nosuid,noexec", str(tmp_path / "recordings")] in ran
     assert ran.index(["mount", "--bind", str(tmp_path / "disk" / "recordings"), str(tmp_path / "recordings")]) \
         < ran.index(["mount", "-o", "remount,bind,nodev,nosuid,noexec", str(tmp_path / "recordings")])
-    assert {"nodev", "nosuid", "noexec"} <= zorcam_storage.mount_options(str(tmp_path / "recordings"))
-
-
-def test_a_disk_mounted_by_an_older_version_is_remounted_once(tmp_path, monkeypatch):
-    mount, rec = zorcam_storage.MOUNT, zorcam_storage.RECORDINGS
-    ran = fake_mounts(tmp_path, monkeypatch, {mount: "rw,noatime", rec: "rw,relatime"})
-    zorcam_storage.attach({"uuid": "u-1", "model": "T7"})
-    assert ran == [["mount", "-o", "remount,nodev,nosuid,noexec", mount],
-                   ["mount", "-o", "remount,bind,nodev,nosuid,noexec", rec]]
     del ran[:]
-    zorcam_storage.attach({"uuid": "u-1", "model": "T7"})  # the check every minute: nothing to do
+    zorcam_storage.attach({"uuid": "u-1", "model": "T7"})  # the check every minute: both mounted, nothing to do
     assert ran == []
 
 

@@ -44,6 +44,8 @@
 # videos_per_page = 30
 # Stay signed in for this many days without entering the password (extended on every visit) (gallery)
 # session_days = 365
+# At most this many people (1-10) can watch at the same time through links without sign-in (all such links together); signed-in users are not counted (gallery)
+# share_viewers_max = 3
 # Which stand this device is: prod, stage or test. Non-prod stands show a TEST / STAGE badge in the app and default to the cloud of the same stand (cloud.stage.zorcam.ru, cloud.test.zorcam.ru) (gallery)
 # environment = prod
 # IP addresses (comma separated) of reverse proxies in front of the gallery, e.g. 127.0.0.1 for nginx on this device. For a connection from one of them the client address in the sign-in limits is the last entry of X-Forwarded-For. Empty: the address of the connection itself (gallery)

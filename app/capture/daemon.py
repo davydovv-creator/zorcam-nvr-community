@@ -150,7 +150,7 @@ def memory_line(workers, proc="/proc"):
     total = anon_mb(os.getpid(), proc)
     parts = [f"supervisor {total}"]
     for cam_id, (worker, _started) in sorted(workers.items()):
-        mine = [("python", worker.pid)] + [(role, pid) for pid, role in tree.get(worker.pid, [])]
+        mine = [("python", worker.pid)] + [(role, pid) for pid, role in sorted(tree.get(worker.pid, []))]
         sizes = [(role, anon_mb(pid, proc)) for role, pid in mine]
         total += sum(mb for _, mb in sizes)
         parts.append(f"{cam_id}: " + ", ".join(f"{role} {mb}" for role, mb in sizes))
@@ -180,7 +180,7 @@ class Status:
     def __init__(self):
         self.data = {"pid": os.getpid(), "camera": CAMERA_ID, "started": time.time(), "state": "starting",
                      "last_frame": None, "keyframe_gap": None, "detector_stream": "main",
-                     "connected_since": None, "reconnects": [], "last_error": None, "last_error_at": None,
+                     "connected_since": None, "reconnects": [], "last_error_at": None,
                      "config_errors": [e.to_dict() for e in CFG.errors],
                      "last_error_msg": None}
         self.written = 0.0
@@ -875,11 +875,10 @@ def run_once(sub=False):
 
 
 def set_error(reason, detail="", reconnect=False):
-    """Последняя ошибка камеры для галереи: last_error — по-английски (журнал), last_error_msg — для перевода."""
+    """Последняя ошибка камеры для галереи (last_error_msg — переводится при показе)."""
     if reconnect:
         STATUS.data["reconnects"].append(time.time())
     STATUS.update(force=True, state="reconnecting", connected_since=None, last_error_at=time.time(),
-                  last_error=f"{reason}: {detail}" if detail else str(reason),
                   last_error_msg={"reason": reason.to_dict(), "detail": detail})
 
 

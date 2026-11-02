@@ -27,7 +27,6 @@
 
   var tabs = document.querySelectorAll('.tab[data-tab]');
   var panels = document.querySelectorAll('.panel');
-  var activeTab = document.querySelector('.tab.active');
   var shown = document.querySelector('.panel:not([hidden])');
   var current = shown ? shown.getAttribute('data-panel') : 'live';  // embedded Live has no panels
 
@@ -87,6 +86,13 @@
 
   var STALL_MS = PAGE.webrtcFallbackMs + 15000;
   var ICE_SERVERS = PAGE.iceServers;
+  // a page opened by a link without login (/s/<token>): every Live request goes under the link, which knows its camera
+  var BASE = PAGE.liveBase || '';
+  function liveUrl(kind, cam) {
+    if (BASE) return BASE + '/' + kind;
+    var c = encodeURIComponent(cam);
+    return kind === 'webrtc' ? '/live/webrtc?cam=' + c : kind === 'webrtc-log' ? '/live/webrtc-log' : '/live/' + c + '/' + kind;
+  }
   // one Live player per camera: WebRTC via go2rtc (~0.3-0.5 s delay); if it does not connect, HLS
   function Player(wrap) {
     var cam = wrap.getAttribute('data-cam');
@@ -136,7 +142,7 @@
     }
     // why WebRTC was abandoned: to the gallery log (journalctl -u zorcam-nvr-gallery)
     function reportFail(reason) {
-      fetch('/live/webrtc-log', {
+      fetch(liveUrl('webrtc-log', cam), {
         method: 'POST', headers: { 'Content-Type': 'text/plain' }, credentials: 'same-origin',
         body: cam + ': ' + reason + ' | ' + navigator.userAgent
       }).catch(function() {});
@@ -205,7 +211,7 @@
           });
         });
       }).then(function() {
-        return fetch('/live/webrtc?cam=' + encodeURIComponent(cam), {
+        return fetch(liveUrl('webrtc', cam), {
           method: 'POST',
           headers: { 'Content-Type': 'application/sdp' },
           body: conn.localDescription.sdp,
@@ -230,7 +236,7 @@
     function startHls() {
       setStatus(T['js.connecting_hls'], false);
       video.srcObject = null;
-      var src = '/live/' + encodeURIComponent(cam) + '/stream.m3u8';
+      var src = liveUrl('stream.m3u8', cam);
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src;
         tryPlay();
@@ -414,7 +420,8 @@
   document.querySelectorAll('.live-wrap[data-cam]').forEach(function(w) { players.push(Player(w)); });
   function startLive() { players.forEach(function(p) { p.start(); }); }
   function stopLive() { players.forEach(function(p) { p.stop(); }); }
-  function restartLive() { if (current === 'live') { stopLive(); startLive(); } }
+  var denied = false;  // a link without login: the place among the viewers was lost
+  function restartLive() { if (current === 'live' && !denied) { stopLive(); startLive(); } }
   setInterval(function() {
     if (current === 'live' && !document.hidden) players.forEach(function(p) { p.check(); });
   }, 5000);
@@ -422,6 +429,24 @@
   document.addEventListener('visibilitychange', function() {
     if (!document.hidden) players.forEach(function(p) { p.resetClock(); });
   });
+  // a link without login limits the viewers: WebRTC sends no requests once connected, so the page tells now and then
+  // that it is still watched; "too many" (429) means the place was lost while the page slept
+  if (BASE) {
+    var pinging = false;
+    var pingTimer = setInterval(function() {
+      if (document.hidden || pinging) return;
+      pinging = true;
+      fetch(BASE + '/ping', { cache: 'no-store' }).then(function(r) {
+        if (r.status !== 429) return;
+        denied = true;
+        clearInterval(pingTimer);
+        stopLive();
+        var box = document.querySelector('.content');
+        box.textContent = T['share.too_many'];
+        box.className = 'content empty';
+      }).catch(function() {}).then(function() { pinging = false; });
+    }, 20000);
+  }
   // the network changed (Wi-Fi <-> LTE): the old connections lead nowhere
   window.addEventListener('online', restartLive);
   var liveReload = document.getElementById('live-reload');

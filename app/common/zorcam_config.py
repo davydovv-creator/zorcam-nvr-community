@@ -79,6 +79,9 @@ PARAMS = [
      "Clips per page on the Videos tab: 10, 30 or 60", "gallery"),
     ("gallery", "session_days", 365, int,
      "Stay signed in for this many days without entering the password (extended on every visit)", "gallery"),
+    ("gallery", "share_viewers_max", 3, int,
+     "At most this many people (1-10) can watch at the same time through links without sign-in (all such links together); "
+     "signed-in users are not counted", "gallery"),
     ("gallery", "environment", "prod", str,
      "Which stand this device is: prod, stage or test. Non-prod stands show a TEST / STAGE badge in the app and "
      "default to the cloud of the same stand (cloud.stage.zorcam.ru, cloud.test.zorcam.ru)", "gallery"),
@@ -92,6 +95,7 @@ PARAMS = [
 CHOICES = {
     ("language", "language"): ("auto", "en", "ru"),
     ("gallery", "videos_per_page"): (10, 30, 60),
+    ("gallery", "share_viewers_max"): tuple(range(1, 11)),
     ("gallery", "environment"): ("prod", "stage", "test"),
 }
 # parameters with a format check: (regex, message key)
@@ -103,12 +107,7 @@ PATTERNS = {
     ("gallery", "trusted_proxies"): (r"^([0-9A-Fa-f:.]+(\s*,\s*[0-9A-Fa-f:.]+)*)?$", "cfg.ip_list"),
 }
 # obsolete keys: silently skipped when reading the file
-DEPRECATED = {("capture", "clip_seconds"), ("capture", "frame_interval"), ("storage", "frames_minutes"),
-              ("storage", "videos_days"),  # now per camera
-              ("gallery", "max_grid"), ("gallery", "horizons"),  # the Timelapse tab is only the timelapse now
-              ("notifications", "health"), ("notifications", "health_repeat_minutes"),  # no failure push any more
-              ("live", "public_ip")}  # the address comes by itself: STUN, the address the app is opened at, TURN of the cloud
-SECTIONS = ("language", "capture", "live", "notifications", "health", "gallery")
+DEPRECATED = set()
 
 _BOOL = {"yes": True, "true": True, "on": True, "1": True, "no": False, "false": False, "off": False, "0": False}
 
@@ -390,8 +389,6 @@ CAMERA_FIELDS = [
     ("frames_days", 10, int,
      "How long to keep snapshots, days (1 to 365); a snapshot every 5 s takes about 1 to 2 GB a day"),
 ]
-# the camera fields of older versions (record_mode, video_height: clips from keyframes, re-encoded on the Pi) are
-# ignored in cameras.json and dropped when it is saved
 # numeric camera fields: allowed range and the error message
 CAMERA_RANGES = {"clip_seconds": (2, 120, "cfg.clip_seconds"),
                  "videos_days": (1, 365, "cfg.days"), "frames_interval": (1, 3600, "cfg.frames_interval"),
@@ -458,8 +455,8 @@ def save_cameras(cams, path=None):
     _atomic_write(path or CAMERAS_FILE, text + "\n", 0o644)
 
 
-def get_camera(cam_id, cams=None):
-    return next((c for c in (load_cameras() if cams is None else cams) if c["id"] == cam_id), None)
+def get_camera(cam_id):
+    return next((c for c in load_cameras() if c["id"] == cam_id), None)
 
 
 def camera_password(cam_id):

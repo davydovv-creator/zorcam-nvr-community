@@ -1,0 +1,9 @@
+/* links without login: the link itself in mono, "Copy" / "Share" as underlined text actions under it */
+.sharelink { font:13px var(--mono); color:var(--text); user-select:all; -webkit-user-select:all; }
+.shareacts { position:relative; display:flex; gap:20px; padding:0 16px; }
+.shareacts::before { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--line); }
+.shareacts button {
+  min-height:44px; padding:11px 0; border:none; border-radius:0; background:none; color:var(--text); font:inherit; cursor:pointer;
+  text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px;
+}
+.shareacts button[hidden] { display:none; }

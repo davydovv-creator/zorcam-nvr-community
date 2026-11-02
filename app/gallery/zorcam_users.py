@@ -180,21 +180,6 @@ def forget_camera(cam_id):
         save(users)
 
 
-def migrate_camera_access(camera_ids):
-    """users.json of the version where new cameras were visible to all ("cameras_off", the closed ones):
-    every user keeps seeing what they saw, as "cameras" (the open ones). Returns the migrated names."""
-    users = load()
-    done = []
-    for name, u in users.items():
-        if u["role"] != "admin" and "cameras" not in u:
-            off = set(u.pop("cameras_off", None) or [])
-            u["cameras"] = sorted(set(camera_ids) - off)
-            done.append(name)
-    if done:
-        save(users)
-    return done
-
-
 def delete_user(name):
     users = load()
     if users.pop(name, None) is None:

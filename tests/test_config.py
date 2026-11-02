@@ -36,7 +36,7 @@ def test_params_are_consistent():
     assert len(keys) == len(set(keys)), "duplicate parameter in PARAMS"
     for s, k, default, typ, desc, who in zorcam_config.PARAMS:
         assert desc and who
-        assert s in zorcam_config.SECTIONS
+        assert f"section.{s}" in i18n.STRINGS, f"no section title for [{s}]"
         assert (s, k) in i18n.PARAM_RU, f"no Russian description for [{s}] {k}"
         if typ is not list:
             assert isinstance(default, typ), (s, k)
@@ -57,22 +57,24 @@ def test_values_errors_and_duplicate_sections(conf):
     path, *_ = conf
     path.write_text("[gallery]\nvideos_per_page = 60\nvideo_limit = 5\n"
                     "[capture]\nstall_timeout = abc\n"
-                    "[gallery]\nsession_days = 50\nmax_grid = 120\nhorizons = 5, 10\nunknown = 1\n", encoding="utf-8")
+                    "[gallery]\nsession_days = 50\nunknown = 1\n", encoding="utf-8")
     cfg = zorcam_config.load()
     assert cfg.get("gallery", "videos_per_page") == 60
     assert cfg.get("gallery", "session_days") == 50  # a repeated [gallery] does not break the file
-    assert ("gallery", "video_limit") not in cfg.values  # an obsolete parameter is skipped silently
+    assert ("gallery", "video_limit") not in cfg.values  # an unknown parameter is not taken
     assert any("stall_timeout" in str(e) for e in cfg.errors)
     assert any("unknown" in str(e) for e in cfg.errors)
     assert cfg.overridden == {("gallery", "videos_per_page"), ("gallery", "session_days")}
-    assert not any("max_grid" in str(e) for e in cfg.errors)  # removed: every snapshot is shown
-    assert not any("horizons" in str(e) for e in cfg.errors)  # removed with the snapshot grid
 
 
 @pytest.mark.parametrize("section,key,raw,expected", [
     ("gallery", "videos_per_page", "10", 10),
     ("gallery", "videos_per_page", "45", None),
     ("gallery", "videos_per_page", "x", None),
+    ("gallery", "share_viewers_max", "1", 1),
+    ("gallery", "share_viewers_max", "10", 10),
+    ("gallery", "share_viewers_max", "0", None),
+    ("gallery", "share_viewers_max", "11", None),
     ("capture", "stall_timeout", "-1", None),
     ("language", "language", "ru", "ru"),
     ("language", "language", "de", None),
@@ -149,14 +151,6 @@ def test_errors_survive_the_capture_status_file(conf):
     assert back.text("ru") == err.text("ru") and back.text("en") == err.text("en")
 
 
-def test_an_old_external_ip_is_no_error(conf):
-    """[live] public_ip of older versions: ignored, no error (the address comes by itself)."""
-    path, *_ = conf
-    path.write_text("[live]\npublic_ip = 203.0.113.10\n", encoding="utf-8")
-    cfg = zorcam_config.load()
-    assert not cfg.errors and ("live", "public_ip") not in cfg.values
-
-
 def test_go2rtc_finds_its_public_address_itself():
     with open(os.path.join(REPO, "app", "go2rtc", "zorcam-nvr-go2rtc.service"), encoding="utf-8") as f:
         unit = f.read()
@@ -201,21 +195,21 @@ def test_every_camera_field_has_a_form_label():
         assert f"cam.label.{key}" in i18n.STRINGS, key
 
 
-def test_camera_recording_defaults_and_old_global_params():
+def test_camera_recording_defaults():
     cam, errors = zorcam_config.validate_camera(CAMERA)
     assert not errors and (cam["save_videos"], cam["clip_seconds"], cam["videos_days"]) == (True, 10, 5)
     assert (cam["save_frames"], cam["frames_interval"], cam["frames_days"]) == (True, 5, 10)
-    # the clips of older versions from keyframes (record_mode, video_height): ignored, no error, gone when saved
-    old, errors = zorcam_config.validate_camera({**CAMERA, "record_mode": "keyframes", "video_height": "720"})
-    assert not errors and "record_mode" not in old and "video_height" not in old
     assert zorcam_config.validate_camera({**CAMERA, "clip_seconds": "2", "frames_days": "365"})[0]["frames_days"] == 365
 
 
-def test_the_old_global_recording_params_are_skipped(conf):
+def test_a_removed_param_in_deprecated_is_skipped(conf, monkeypatch):
+    """A parameter taken out of PARAMS goes to DEPRECATED: a zorcam.conf that still has it gives no error."""
     path, *_ = conf
-    path.write_text("[capture]\nclip_seconds = 10\nframe_interval = 5\n[storage]\nframes_minutes = 60\nvideos_days = 5\n",
-                    encoding="utf-8")
-    assert not zorcam_config.load().errors
+    path.write_text("[capture]\nold_param = 5\n", encoding="utf-8")
+    assert [e.key for e in zorcam_config.load().errors] == ["cfg.unknown"]
+    monkeypatch.setattr(zorcam_config, "DEPRECATED", {("capture", "old_param")})
+    cfg = zorcam_config.load()
+    assert not cfg.errors and ("capture", "old_param") not in cfg.values
 
 
 def test_camera_ids_must_have_different_password_keys():

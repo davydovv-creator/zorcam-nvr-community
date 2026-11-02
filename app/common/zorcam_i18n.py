@@ -126,6 +126,8 @@ PARAM_RU = {
     ("health", "max_cpu_temp"): "Неисправность, если температура процессора выше, °C",
     ("gallery", "videos_per_page"): "Роликов на странице во вкладке «Видео»: 10, 30 или 60",
     ("gallery", "session_days"): "Срок входа без повторного ввода пароля, дней (продлевается при каждом заходе)",
+    ("gallery", "share_viewers_max"): "Сколько человек (1-10) одновременно могут смотреть по ссылкам без входа (все такие "
+                                      "ссылки вместе); вошедшие пользователи не считаются",
     ("gallery", "trusted_proxies"): "IP-адреса обратных прокси перед галереей через запятую, например 127.0.0.1 для nginx на "
                                     "этом устройстве. Для соединения с такого адреса адрес клиента в ограничениях входа — "
                                     "последний элемент X-Forwarded-For. Пусто: адрес самого соединения",
@@ -168,7 +170,6 @@ STRINGS = {
     "cfg.clip_seconds": {"en": "expected a whole number from 2 to 120", "ru": "ожидается целое число от 2 до 120"},
     "cfg.frames_interval": {"en": "expected a whole number from 1 to 3600", "ru": "ожидается целое число от 1 до 3600"},
     "cfg.days": {"en": "expected a whole number from 1 to 365", "ru": "ожидается целое число от 1 до 365"},
-    "cfg.host": {"en": "expected an IP address or a host name", "ru": "ожидается IP-адрес или имя хоста"},
     "cfg.negative": {"en": "negative value", "ru": "отрицательное значение"},
     "cfg.unreadable": {"en": "file not read: {error}", "ru": "файл не прочитан: {error}"},
     "cfg.unknown": {"en": "[{section}] {key}: unknown parameter, ignored",
@@ -628,8 +629,6 @@ STRINGS = {
                          "без движения OFF) и своё состояние online / offline — для Home Assistant и любых других "
                          "систем. Уходят только ID и название камеры, ON / OFF и состояние, без видео и снимков. "
                          "Изменения применяются сразу, без перезапуска."},
-    "mqtt.broker_section": {"en": "Broker", "ru": "Брокер"},
-    "mqtt.topics_section": {"en": "Topics", "ru": "Темы"},
     "mqtt.enabled": {"en": "Publish to MQTT", "ru": "Публиковать в MQTT"},
     "mqtt.host": {"en": "Broker address", "ru": "Адрес брокера"},
     "mqtt.host_hint": {"en": "Name or IP address, for example 192.168.1.10", "ru": "Имя или IP-адрес, например 192.168.1.10"},
@@ -656,7 +655,6 @@ STRINGS = {
     "mqtt.keep": {"en": "set — leave empty to keep", "ru": "задан — оставьте пустым"},
     "mqtt.saved": {"en": "Saved", "ru": "Сохранено"},
     "mqtt.invalid": {"en": "Not saved: check the highlighted fields", "ru": "Не сохранено: проверьте отмеченные поля"},
-    "mqtt.back": {"en": "Back to General settings", "ru": "Назад в «Общие»"},
     "mqtt.bad.host": {"en": "Enter a name or an IP address, letters, digits, dots, dashes and colons only",
                       "ru": "Введите имя или IP-адрес: только буквы, цифры, точки, дефисы и двоеточия"},
     "mqtt.bad.host_empty": {"en": "Enter the broker address", "ru": "Введите адрес брокера"},
@@ -699,6 +697,7 @@ STRINGS = {
                          "устройство (камера в другой подсети — укажите подсеть ниже); или введите камеру вручную."},
     "onvif.added": {"en": "already added", "ru": "уже добавлена"},
     "onvif.add": {"en": "Add", "ru": "Добавить"},
+    "onvif.add_again": {"en": "Add again", "ru": "Добавить ещё раз"},
     "onvif.again": {"en": "Search again", "ru": "Искать снова"},
     "onvif.searching": {"en": "Searching for cameras…", "ru": "Ищем камеры…"},
     "onvif.reading": {"en": "Asking the camera…", "ru": "Спрашиваем камеру…"},
@@ -756,6 +755,45 @@ STRINGS = {
     "cam.probe_sub": {"en": "additional address: {error}", "ru": "дополнительный адрес: {error}"},
     "cams.off": {"en": "switched off", "ru": "выключена"},
     "cams.no_frame": {"en": "No frame", "ru": "Нет кадра"},
+    "live.share": {"en": "Share", "ru": "Поделиться"},
+    "share.link": {"en": "Links without login", "ru": "Ссылки без входа"},
+    "share.title": {"en": "Links without login: {name}", "ru": "Ссылки без входа: {name}"},
+    "share.intro": {"en": "A link opens only the live view of this camera, without signing in: nothing else of the device. "
+                          "Anyone who has the link can watch until you delete it or it expires.",
+                    "ru": "Ссылка открывает только Live этой камеры, без входа, и больше ничего на устройстве. "
+                          "Кто получил ссылку, тот и смотрит, пока вы её не удалите или не истечёт срок."},
+    "share.list": {"en": "Links", "ru": "Ссылки"},
+    "share.none": {"en": "No links yet.", "ru": "Ссылок пока нет."},
+    "share.no_label": {"en": "Link without a name", "ru": "Ссылка без названия"},
+    "share.until": {"en": "Valid until {date}", "ru": "Действует до {date}"},
+    "share.forever": {"en": "No expiry", "ru": "Без срока"},
+    "share.expired": {"en": "Expired {date}", "ru": "Истекла {date}"},
+    "share.opened": {"en": "Opened: {at}", "ru": "Открыта: {at}"},
+    "share.never": {"en": "Never opened", "ru": "Не открывалась"},
+    "share.create": {"en": "Create a link", "ru": "Создать ссылку"},
+    "share.label": {"en": "Name (who it is for)", "ru": "Название (для кого)"},
+    "share.label_ph": {"en": "For example, Neighbour", "ru": "Например, сосед"},
+    "share.expiry": {"en": "Valid for", "ru": "Срок действия"},
+    "share.days.1": {"en": "1 day", "ru": "1 день"},
+    "share.days.7": {"en": "7 days", "ru": "7 дней"},
+    "share.days.30": {"en": "30 days", "ru": "30 дней"},
+    "share.days.never": {"en": "No expiry", "ru": "Без срока"},
+    "share.submit": {"en": "Create the link", "ru": "Создать ссылку"},
+    "share.new": {"en": "The link is ready. It is shown only now: copy it or send it.",
+                  "ru": "Ссылка готова. Она показана только сейчас: скопируйте её или отправьте."},
+    "share.copy": {"en": "Copy", "ru": "Скопировать"},
+    "share.copied": {"en": "Copied", "ru": "Скопировано"},
+    "share.share": {"en": "Share", "ru": "Поделиться"},
+    "share.hint": {"en": "To open the camera from the Home Screen: open the link in Safari, tap “Share”, "
+                         "then “Add to Home Screen”.",
+                   "ru": "Чтобы открывать камеру с экрана «Домой»: откройте ссылку в Safari, нажмите «Поделиться», "
+                         "затем «На экран «Домой»»."},
+    "share.delete": {"en": "Delete the link", "ru": "Удалить ссылку"},
+    "share.confirm_delete": {"en": "Delete the link {label}? It stops working at once.",
+                             "ru": "Удалить ссылку {label}? Она сразу перестанет работать."},
+    "share.too_many_links": {"en": "Too many links: delete the ones you no longer need first.",
+                             "ru": "Слишком много ссылок: сначала удалите ненужные."},
+    "share.too_many": {"en": "Too many viewers, try again later", "ru": "Слишком много зрителей, попробуйте позже"},
     "zones.link": {"en": "Motion zones", "ru": "Зоны движения"},
     "zones.title": {"en": "Motion zones: {name}", "ru": "Зоны движения: {name}"},
     "zones.intro": {"en": "Paint the cells of the frame with a finger: a tap or a stroke switches them. "
@@ -809,6 +847,7 @@ STRINGS = {
                                "отметьте флажок под формой."},
     "cam.force": {"en": "Save anyway, without checking the camera", "ru": "Сохранить без проверки камеры"},
     "cam.tips_title": {"en": "Recommended camera settings", "ru": "Рекомендуемые настройки камеры"},
+    "cam.manual": {"en": "Add manually", "ru": "Ручное добавление"},
     "cam.tips": {"en": "Set these in the camera's own web interface (or its app):<ul>"
                        "<li><b>Main stream H.264</b> (not H.265: browsers cannot show it over WebRTC); sound G.711 (PCMA) for "
                        "Live only, AAC for Live and clips, or off.</li>"

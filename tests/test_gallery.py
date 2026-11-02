@@ -181,6 +181,7 @@ ACCESS = [
     ("/camera/new",                               403, 403, 200),
     ("/camera/front",                             403, 403, 200),
     ("/camera/front/zones",                       403, 403, 200),  # motion zones of a camera (admin only)
+    ("/camera/front/shares",                      403, 403, 200),  # links without login (admin only); POSTs: tests/test_shares.py
     ("/onvif",                                    403, 403, 200),
     ("/yandex",                                   403, 403, 200),
     ("/mqtt",                                     403, 403, 200),
@@ -1040,11 +1041,12 @@ def test_status_last_camera_error_spans_the_row(server, cookies, monkeypatch):
     """Status: "Last camera error" and its time are a line of their own, the long ffmpeg text is under it full width."""
     at = time.time()
     monkeypatch.setattr(app.HEALTH, "capture_status", lambda cam_id: {
-        "state": "reconnecting", "last_error_at": at, "last_error": "could not connect: camera: Network is unreachable"})
+        "state": "reconnecting", "last_error_at": at,
+        "last_error_msg": {"reason": {"key": "capture.connect_failed"}, "detail": "camera: Network is unreachable"}})
     body = request(server, "GET", "/settings?tab=status", cookie=cookies["admin"], headers=RU)[2]
     assert (f'<div class="row wide"><div class="wide-head"><div class="k">{t("ru", "st.last_error")}</div>'
             f'<div class="v">{app.fmt_clock(at)}</div></div>'
-            '<div class="wide-text">could not connect: camera: Network is unreachable</div></div>') in body
+            f'<div class="wide-text">{t("ru", "capture.connect_failed")}: camera: Network is unreachable</div></div>') in body
 
 
 def test_capture_errors_are_translated():
@@ -1052,7 +1054,6 @@ def test_capture_errors_are_translated():
         "reason": {"key": "capture.stall", "kw": {"seconds": 15}}, "detail": "Connection refused"}}
     assert app.capture_error(st).text("en") == "no frames for 15 s: Connection refused"
     assert app.capture_error(st).text("ru") == t("ru", "capture.stall", seconds=15) + ": Connection refused"
-    assert app.capture_error({"last_error": "old detector text"}).text("ru") == "old detector text"
     assert app.capture_error({}) is None
 
 
@@ -2138,7 +2139,6 @@ def test_recording_fields_are_inactive_while_their_switch_is_off(server, cookies
             assert re.search(rf'name="{key}"[^>]* data-needs="{switch}"[ >]', page), key
     # both switches are on for a new camera: every field is active; there is no video mode or resolution any more
     assert page.count(" disabled") == 0 and page.count('field off"') == 0
-    assert 'name="record_mode"' not in page and 'name="video_height"' not in page
     status, _, body = camera_form(server, cookies["admin"], id="rec", name="Rec", rtsp_url="rtsp://127.0.0.1:1/r",
                                   force="1", save_frames="yes", frames_interval="0")
     assert status == 400 and t("en", "cfg.frames_interval") in body
@@ -2206,7 +2206,7 @@ def write_meta(vids, name, data):
 
 
 def test_video_meta_is_checked_before_it_reaches_the_page(tmp_path, monkeypatch):
-    """<name>.json comes from the detector: no file (old clips), garbage or out-of-range numbers show nothing."""
+    """<name>.json comes from the detector: no file (a clip without a box), garbage or out-of-range numbers show nothing."""
     monkeypatch.setattr(app, "BASE_DIR", str(tmp_path))
     vids = tmp_path / "front_videos"
     vids.mkdir()
@@ -2522,6 +2522,7 @@ def test_onvif_search_fills_the_camera_form(server, cookies, restore_cameras, mo
     page = request(server, "GET", "/onvif", cookie=cookies["admin"])[2]
     assert "Hall cam" in page and t("en", "onvif.added") in page  # front and yard are on 127.0.0.1
     assert '<section class="added">' in page  # a camera already added: its panel is marked
+    assert f">{t('en', 'onvif.add_again')}</button>" in page and f">{t('en', 'onvif.add')}</button>" not in page
     assert f'data-busy="{t("en", "onvif.reading")}"' in page and f'data-busy="{t("en", "onvif.searching")}"' in page
     form = {"csrf": csrf_of(page, "/onvif"), "xaddr": xaddr, "name": "Hall cam", "setup": "", "rtsp_user": "admin"}
     status, _, body = request(server, "POST", "/onvif", urlencode(dict(form, password="wrong")), cookie=cookies["admin"])
@@ -2561,8 +2562,8 @@ def test_onvif_search_in_another_subnet_is_kept_on_the_device(server, cookies, m
     asked = []
     monkeypatch.setattr(app.onvif, "discover", lambda timeout, subnet="": asked.append(subnet) or
                         (subnet and app.onvif.subnet_hosts(subnet) and []) or [])
-    body = request(server, "GET", "/onvif", cookie=cookies["admin"])[2]  # nothing chosen yet: the field has 192.168.1.0
-    assert asked[-1] == "192.168.1.0" and 'value="192.168.1.0"' in body
+    body = request(server, "GET", "/onvif", cookie=cookies["admin"])[2]  # nothing chosen yet: multicast only
+    assert asked[-1] == "" and 'name="subnet" value="" placeholder="192.168.1.0"' in body
     status, headers, body = request(server, "GET", "/onvif?subnet=192.168.2.0%2F24", cookie=cookies["admin"])
     assert status == 200 and asked[-1] == "192.168.2.0/24" and 'value="192.168.2.0/24"' in body
     assert "zorcam_onvif_subnet=192.168.2.0/24" in headers["Set-Cookie"] and "Max-Age=31536000" in headers["Set-Cookie"]
@@ -3269,7 +3270,7 @@ def test_connections_are_kept_alive(server, cookies):
 
 def test_timelapse_tab_is_the_player_only(server, cookies):
     """Timelapse: only the player and the calendar under it, no grid, no mode switch, no period pills of the grid;
-    the camera tabs stay. Old links of the snapshot grid (mode=, horizon=, fpage=) open the same tab."""
+    the camera tabs stay."""
     for user in ("admin", "bob"):
         body = request(server, "GET", "/?tab=all&cam=front", cookie=cookies[user])[2]
         panel = body[body.index('data-panel="all"'):body.index("<script")]
@@ -3286,10 +3287,6 @@ def test_timelapse_tab_is_the_player_only(server, cookies):
         assert re.findall(r'data-speed="([\d.]+)">([^<]+)<', panel) == [
             (n, "×" + n) for n in ("0.25", "0.5", "1", "2", "4")]  # real-time labels come from the frames, in JS
         assert 'class="pill active" data-speed="1"' in panel
-    for query in ("mode=grid&horizon=60", "mode=timelapse", "horizon=5&fpage=3", "mode=%ff&horizon=x&fpage=y"):
-        status, _, old = request(server, "GET", f"/?tab=all&cam=front&{query}", cookie=cookies["bob"])
-        assert status == 200 and 'class="tl" data-cam="front"' in old and 'class="grid"' not in old.split("<script")[0].split(
-            'data-panel="all"')[1], query
     ru = request(server, "GET", "/?tab=all&cam=front", cookie=cookies["admin"] + "; zorcam_lang=ru")[2]
     assert t("ru", "tab.records") in ru and "[[" not in ru
     assert request(server, "GET", f"/view/front/{FRAME}", cookie=cookies["admin"])[0] == 404  # no page of one snapshot
@@ -4120,3 +4117,37 @@ def test_any_other_new_password_clears_the_mark(server, cookies, installer_passw
     """Settings -> Users: the password of admin typed there is a chosen one, no longer the installer's."""
     status, _, _ = users_form(server, cookies["admin"], user="admin", password="another1", repeat="another1")
     assert status == 303 and not zorcam_users.is_initial("admin")
+
+
+def test_renaming_a_camera_does_not_check_it(server, cookies, restore_cameras, monkeypatch):
+    """The camera is asked (RTSP DESCRIBE) only when the connection changes: an address, the login, a new password,
+    switching on. A rename of a camera that does not answer at the moment is saved."""
+    monkeypatch.setattr(zorcam_config, "probe_camera", lambda url, timeout: "timeout")
+    page = request(server, "GET", "/camera/yard", cookie=cookies["admin"])[2]
+    csrf = csrf_of(page, "/camera/save")
+    cam = app.camera("yard")
+
+    def edit(**fields):
+        form = {"csrf": csrf, "edit": "yard", "setup": "", "name": cam["name"], "rtsp_url": cam["rtsp_url"],
+                "rtsp_sub_url": cam["rtsp_sub_url"], "rtsp_user": cam["rtsp_user"], "password": "",
+                "enabled": "yes", **fields}
+        return request(server, "POST", "/camera/save", urlencode(form), cookie=cookies["admin"])
+    assert cam["enabled"]
+    assert edit(name="Renamed")[0] == 303 and app.camera("yard")["name"] == "Renamed"
+    status, _, body = edit(name="Again", rtsp_url="rtsp://127.0.0.1:1/other")
+    assert status == 400 and t("en", "cam.force") in body and app.camera("yard")["name"] == "Renamed"
+    assert edit(name="Again", password="new")[0] == 400
+
+
+def test_new_camera_page_order(server, cookies):
+    """A new camera from scratch: recommended settings, then the ONVIF search, then «Add manually» — the form folded in it.
+    A form sent back with errors stays open."""
+    page = request(server, "GET", "/camera/new", cookie=cookies["admin"])[2]
+    tips, find, manual = page.index('class="tips"'), page.index('href="/onvif"'), page.index('<details class="manual">')
+    assert tips < find < manual < page.index('action="/camera/save"')
+    assert t("en", "cam.manual") in page
+    csrf = csrf_of(page, "/camera/save")
+    form = {"csrf": csrf, "edit": "", "setup": "", "id": "bad id", "name": "X", "rtsp_url": "rtsp://127.0.0.1:1/x",
+            "rtsp_user": "", "password": ""}
+    status, _h, body = request(server, "POST", "/camera/save", urlencode(form), cookie=cookies["admin"])
+    assert status == 400 and 'class="manual"' not in body and 'href="/onvif"' not in body

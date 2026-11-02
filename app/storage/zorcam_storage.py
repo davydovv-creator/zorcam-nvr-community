@@ -38,7 +38,6 @@ SYSTEM_MOUNTS = ("/", "/boot", "/boot/firmware")  # диск с такой то�
 # Диск подготовить мог кто угодно: ext4 с файлом устройства, указывающим на SD-карту, дал бы пользователю zorcam-nvr
 # сырой доступ к ней (а setuid-файл — права root), поэтому ни устройств, ни setuid, ни запуска файлов на нём нет
 SAFE_FLAGS = ("nodev", "nosuid", "noexec")
-MOUNTINFO = "/proc/self/mountinfo"
 LSBLK = ["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,MODEL,VENDOR,SERIAL,TRAN,TYPE,UUID,FSTYPE,LABEL,MOUNTPOINTS"]
 
 
@@ -191,34 +190,6 @@ def plain_dir(path):
     return stat.S_ISDIR(os.lstat(path).st_mode)
 
 
-def mount_options(path):
-    """Параметры самой точки монтирования (не файловой системы) по /proc/self/mountinfo; None — не смонтировано.
-    Верхнее монтирование — последняя подходящая строка."""
-    found = None
-    try:
-        with open(MOUNTINFO) as f:
-            for line in f:
-                fields = line.split()
-                if len(fields) > 5 and fields[4].replace("\\040", " ") == path:
-                    found = set(fields[5].split(","))
-    except OSError:
-        return None
-    return found
-
-
-def secure_mount(path, bind=False):
-    """Точке монтирования — nodev,nosuid,noexec; уже смонтированной прежней версией (без них) — один раз
-    remount, дальше параметры совпадают и проверка ничего не делает."""
-    have = mount_options(path)
-    if have is None or set(SAFE_FLAGS) <= have:
-        return
-    run(["mount", "-o", ",".join(["remount"] + (["bind"] if bind else []) + list(SAFE_FLAGS)), path], check=False)
-    if not set(SAFE_FLAGS) <= (mount_options(path) or set(SAFE_FLAGS)):
-        log(f"cannot remount {path} with {','.join(SAFE_FLAGS)}")
-    else:
-        log(f"remounted {path} with {','.join(SAFE_FLAGS)}")
-
-
 def attach(disk):
     """Подключить выбранный диск: смонтировать, подключить его recordings поверх папки на SD, перенести накопленное
     на SD. Детектор после этого перезапускается: открытые им папки — уже на диске."""
@@ -226,11 +197,8 @@ def attach(disk):
         os.makedirs(MOUNT, exist_ok=True)
         run(["mount", "-o", "noatime,commit=60," + ",".join(SAFE_FLAGS), f"UUID={disk['uuid']}", MOUNT])
         log(f"mounted the disk {disk['model']} at {MOUNT}")
-    else:
-        secure_mount(MOUNT)
     on_disk = os.path.join(MOUNT, "recordings")
     if is_mount(RECORDINGS):
-        secure_mount(RECORDINGS, bind=True)
         return 0
     if not plain_dir(RECORDINGS):
         raise RuntimeError(f"{RECORDINGS} is not a folder")

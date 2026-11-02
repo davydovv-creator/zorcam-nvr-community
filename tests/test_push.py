@@ -120,20 +120,17 @@ def test_only_known_push_services_are_accepted():
         assert not push.allowed_endpoint(endpoint), endpoint
 
 
-def test_a_subscription_for_another_host_is_refused_dropped_and_never_sent(tmp_path, monkeypatch):
+def test_a_subscription_for_another_host_is_refused_and_never_sent(tmp_path, monkeypatch):
     monkeypatch.setattr(push, "VAPID_KEY_FILE", str(tmp_path / "vapid.pem"))
     monkeypatch.setattr(push, "SUBSCRIPTIONS_FILE", str(tmp_path / "subs.json"))
     key = push.b64url(push._raw_public(ec.generate_private_key(ec.SECP256R1())))
     keys = {"p256dh": key, "auth": "AAAAAAAAAAAAAAAAAAAAAA"}
     service = push.PushService()
     assert not service.add({"endpoint": "https://192.168.1.10/x", "keys": keys})
-    # a file written by an older version: the foreign host goes away when the service starts
+    assert not service.subscriptions
     good = "https://fcm.googleapis.com/fcm/send/a"
-    (tmp_path / "subs.json").write_text(json.dumps({good: {"keys": keys}, "https://192.168.1.10/x": {"keys": keys}}))
-    service = push.PushService()
-    assert list(service.subscriptions) == [good]
-    assert list(json.loads((tmp_path / "subs.json").read_text())) == [good]
-    # slipped in afterwards: not sent, removed at the first send
+    service.subscriptions[good] = {"keys": keys}
+    # slipped in anyway: not sent, removed at the first send
     service.subscriptions["https://evil.example/x"] = {"keys": keys, "label": "x"}
     sent, logged = [], []
     monkeypatch.setattr(service, "send_one", lambda *a, **k: (sent.append(a), (201, ""))[1])

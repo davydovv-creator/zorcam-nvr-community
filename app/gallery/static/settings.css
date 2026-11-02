@@ -86,10 +86,6 @@ section.added .row::before { border-top-color:rgba(243,243,241,.2); }
 section.added .actions > button { background:var(--panel); border-color:var(--panel); color:var(--text); }
 section.added :focus-visible { outline-color:#f3f3f1; }
 .tip { font-size:13px; color:var(--muted); line-height:1.45; padding:11px 16px; }
-/* the footer of a group: under it, outside the white */
-.foot { margin:7px 16px 0; font-size:13px; line-height:1.4; color:var(--muted); }
-.foot code { font-family:var(--mono); font-size:12px; color:var(--text); }
-.foot code span { white-space:nowrap; }
 .tip b { color:var(--text); }
 .tip ul { margin:6px 0 0; padding-left:18px; }
 

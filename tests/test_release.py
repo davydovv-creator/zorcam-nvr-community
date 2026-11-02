@@ -75,30 +75,6 @@ def test_install_does_not_touch_the_watched_settings_needlessly():
             assert "stat -c %a" in line and "||" in line, line
 
 
-def test_install_renames_an_old_installation_first_and_step_by_step():
-    """The block "the old names" (zorcam): before the service user is made (else a second user would
-    appear next to the old one), and every step guarded, so a run stopped halfway finishes the rest when repeated."""
-    with open(os.path.join(REPO, "app", "install.sh"), encoding="utf-8") as f:
-        text = f.read()
-    block = text[text.index("# ---------------------------------------------------------------- the old names"):
-                 text.index('step "Service user $SVC_USER"')]
-    # entered while anything old is left: the unit, the user or the state folder
-    assert "old=zorcam\n" in block
-    assert '[ -f "$UNIT_DIR/$old-gallery.service" ] || id "$old"' in block and 'sudo test -d "/var/lib/$old"' in block
-    for step, guard in [('sudo groupmod -n', '! getent group "$SVC_USER"'),
-                        ('sudo usermod -l', '! id "$SVC_USER"'),
-                        ('sudo mv "/var/lib/$old" "$STATE"', '! sudo test -e "$STATE"'),
-                        ]:
-        assert step in block and guard in block[:block.index(step)], step
-    # the services stop before the user is renamed (usermod refuses a user with running processes)
-    assert block.index("systemctl disable -q --now") < block.index("sudo usermod -l")
-    # units one by one: a wildcard zorcam-* would also remove zorcam-nvr-*
-    assert '"$UNIT_DIR/$old"-*' not in block and "$old-*" not in block
-    # the temporary files keep their names (zorcam_* in /dev/shm)
-    assert "/dev/shm" not in block
-
-
-
 def test_community_snapshot_has_only_the_core(tmp_path, monkeypatch):
     """tools/community_export.py: the public snapshot (zorcam-nvr-community) gets the core and community/, never the
     development files; its README installs from the public repository. Skipped in the snapshot itself."""
@@ -216,15 +192,13 @@ def test_interface_texts_do_not_name_the_board():
 def test_install_no_start_mode_starts_nothing():
     """ZORCAM_NO_START=1 (building an image in a chroot): install.sh only enables the units. Every command that needs a
     running systemd (daemon-reload, start/restart/is-active, enable --now), the firewall and the checks of the running services
-    must sit in rename_old (an old installation does not exist in an image), in the else branch of the NO_START test, or after
-    the early exit of the NO_START mode."""
+    must sit in the else branch of the NO_START test or after the early exit of the NO_START mode."""
     with open(os.path.join(REPO, "app", "install.sh"), encoding="utf-8") as f:
         lines = f.read().splitlines()
 
     def index(prefix):
         return next(i for i, line in enumerate(lines) if line.startswith(prefix))
 
-    old_start, old_end = index("rename_old() {"), index("}")
     if_no_start = index('if [ "$NO_START" = 1 ]; then  # enable')
     else_no_start = next(i for i in range(if_no_start, len(lines)) if lines[i] == "else")
     end_no_start = next(i for i in range(else_no_start, len(lines)) if lines[i] == "fi")
@@ -237,7 +211,7 @@ def test_install_no_start_mode_starts_nothing():
         code = line.split("#", 1)[0]
         if not needs_systemd.search(code) or code.lstrip().startswith(("restart_if()", "log", "echo")):
             continue
-        ok = old_start <= i <= old_end or else_no_start < i < end_no_start or i > early_exit
+        ok = else_no_start < i < end_no_start or i > early_exit
         assert ok, f"install.sh line {i + 1} starts something outside the NO_START guard: {line.strip()}"
     # the early exit comes before the check of the services and the guards stay
     assert early_exit < index("step \"Verification\"")

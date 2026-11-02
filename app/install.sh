@@ -46,46 +46,6 @@ if [ -n "$MEM_KB" ] && [ "$MEM_KB" -lt 819200 ]; then
     warn "less than 1 GB of memory: not supported, at most 1-2 cameras"
 fi
 
-# ---------------------------------------------------------------- the old names
-# Before the repository became zorcam-nvr, Zorcam was installed as zorcam (user zorcam, /opt/zorcam, /var/lib/zorcam,
-# zorcam-* services).
-# Renamed once: recordings, settings, users, push subscriptions and the cloud link stay; every step can be repeated
-# after a failure. Units are named one by one: zorcam-* also matches zorcam-nvr-*
-rename_old() {  # rename_old OLD_NAME
-    local old="$1" unit f debug_on=0
-    step "Renaming the installation $old to $SVC_USER"
-    for unit in go2rtc-config.path capture gallery go2rtc cloud debug-monitor; do
-        sudo systemctl disable -q --now "$old-$unit" 2>/dev/null || true
-    done
-    for unit in capture gallery go2rtc cloud debug-monitor go2rtc-config; do
-        sudo rm -rf "$UNIT_DIR/$old-$unit.service" "$UNIT_DIR/$old-$unit.service.d"
-    done
-    sudo rm -f "$UNIT_DIR/$old-go2rtc-config.path" "/usr/local/bin/$old-debug-monitor"
-    sudo systemctl daemon-reload
-    # the debug settings (debug.sh on) stay on under the new names
-    for f in "/etc/systemd/journald.conf.d/$old-debug.conf" "/etc/sysctl.d/90-$old-debug.conf"; do
-        if sudo test -f "$f"; then sudo mv "$f" "${f/$old-debug/$SVC_USER-debug}"; debug_on=1; fi
-    done
-    [ "$debug_on" = 0 ] || warn "debugging was on: run $SRC/debug.sh on again to start its monitor"
-    if getent group "$old" >/dev/null && ! getent group "$SVC_USER" >/dev/null; then
-        sudo groupmod -n "$SVC_USER" "$old"
-    fi
-    if id "$old" >/dev/null 2>&1 && ! id "$SVC_USER" >/dev/null 2>&1; then
-        sudo usermod -l "$SVC_USER" -d "$STATE" "$old"
-    fi
-    if sudo test -d "/var/lib/$old" && ! sudo test -e "$STATE"; then
-        sudo mv "/var/lib/$old" "$STATE"
-    fi
-    sudo rm -f "$STATE/.zorcam.conf.applied"  # all services start anew anyway
-    sudo rm -rf "/opt/$old"
-    sudo test -d "/var/lib/$old" && die "/var/lib/$old is still there next to $STATE: move what you need by hand"
-    ok "now user $SVC_USER, $STATE, $PREFIX, $SVC_USER-* services"
-}
-old=zorcam
-if [ -f "$UNIT_DIR/$old-gallery.service" ] || id "$old" >/dev/null 2>&1 || sudo test -d "/var/lib/$old"; then
-    rename_old "$old"
-fi
-
 # ---------------------------------------------------------------- service user and folders
 step "Service user $SVC_USER"
 if ! id "$SVC_USER" >/dev/null 2>&1; then
@@ -236,6 +196,7 @@ copy "$SRC/gallery/yandex.py"        "$PREFIX/gallery/yandex.py"    644 && RESTA
 copy "$SRC/gallery/stun.py"          "$PREFIX/gallery/stun.py"      644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/episodes.py"      "$PREFIX/gallery/episodes.py"  644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/mqtt.py"          "$PREFIX/gallery/mqtt.py"      644 && RESTART_GALLERY=1 || true
+copy "$SRC/gallery/shares.py"        "$PREFIX/gallery/shares.py"    644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/brand.py"          "$PREFIX/gallery/brand.py"     644 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_users.py"   "$PREFIX/gallery/zorcam_users.py" 755 && RESTART_GALLERY=1 || true
 copy "$SRC/gallery/zorcam_html.py"    "$PREFIX/gallery/zorcam_html.py"  644 && RESTART_GALLERY=1 || true
@@ -280,7 +241,6 @@ rm -f "$BUILD_TMP"
 # only when needed: a chmod is a change for zorcam-nvr-go2rtc-config.path (IN_ATTRIB), and every run of this script
 # restarted go2rtc, dropping Live and the stream recorders for a few seconds
 [ "$(sudo stat -c %a "$SECRETS")" = 600 ] || sudo chmod 600 "$SECRETS"
-sudo rm -f "$CONFIG_DIR/user_prefs.json"  # obsolete: the language is picked and kept on each device
 ok "folders $PREFIX/capture, $PREFIX/gallery, $PREFIX/go2rtc, $PREFIX/cloud, $PREFIX/storage"
 
 step "Settings"

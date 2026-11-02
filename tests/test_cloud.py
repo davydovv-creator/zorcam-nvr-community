@@ -585,7 +585,7 @@ def test_timelapse_player_on_the_page(server, tunnel):  # noqa: F811
     pair_locally()
     try:
         for lang, cookie_lang in (("en", ""), ("ru", "zorcam_lang=ru")):
-            status, _, body = request(tunnel, "GET", "/?tab=all&cam=front&mode=grid&horizon=60",
+            status, _, body = request(tunnel, "GET", "/?tab=all&cam=front",
                                       headers={"X-Zorcam-Identity": identity("dev1234567", "bob"), "Cookie": cookie_lang})
             assert status == 200 and "[[" not in body
             panel = body[body.index('data-panel="all"'):body.index("<script")]

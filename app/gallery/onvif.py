@@ -118,17 +118,21 @@ def discover(timeout=3.0, subnet="", port=MULTICAST[1]):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-        sock.settimeout(0.3)
         message = PROBE.format(id=uuid.uuid4()).encode()
         sent = 0
+        # Отправка не блокируется: пакеты к несуществующим адресам ждут ARP в очереди и упираются в буфер сокета,
+        # блокирующий sendto растянул бы поиск. Не влезло (BlockingIOError/ENOBUFS) — этот адрес пропускаем,
+        # второй проход ниже повторит; ответы читаем с таймаутом через select.
+        sock.setblocking(False)
         for _ in range(2):  # UDP теряется: второй запрос чуть позже
             for target in targets:
                 try:
                     sock.sendto(message, target)
                     sent += 1
-                except OSError:  # нет сети или маршрута (для multicast или до этого адреса)
+                except OSError:  # нет сети или маршрута, буфер полон (BlockingIOError — тоже OSError)
                     pass
             time.sleep(0.1)
+        sock.settimeout(0.3)
         if not sent:
             return []
         end = time.monotonic() + timeout

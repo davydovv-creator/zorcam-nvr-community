@@ -234,6 +234,46 @@ def test_discover_asks_every_address_of_a_subnet():
     assert [d["host"] for d in found] == ["127.0.0.2"] and found[0]["name"] == "Hall cam"
 
 
+def test_discover_does_not_block_on_sending(monkeypatch):
+    """A full send buffer (packets to absent addresses wait for ARP) must not hold the search: the socket sends
+    without blocking, a refused address is skipped and the search ends in about the timeout."""
+    import socket
+    import time
+
+    class Sock:
+        blocking = None
+        timeouts = []
+
+        def __init__(self, *args):
+            pass
+
+        def setsockopt(self, *args):
+            pass
+
+        def setblocking(self, flag):
+            Sock.blocking = flag
+
+        def settimeout(self, value):
+            Sock.timeouts.append(value)
+            Sock.blocking = bool(value)
+
+        def sendto(self, data, target):
+            if Sock.blocking:
+                raise AssertionError("sendto on a blocking socket")
+            raise BlockingIOError()
+
+        def recvfrom(self, size):
+            time.sleep(0.05)
+            raise socket.timeout()
+
+        def close(self):
+            pass
+    monkeypatch.setattr(onvif.socket, "socket", Sock)
+    start = time.monotonic()
+    assert onvif.discover(0.3, "192.168.2.0") == []  # nothing was sent: no wait for answers
+    assert time.monotonic() - start < 1.0
+
+
 # what the PTZ node of the fake PTZ camera can do (GetNodes); None — the camera answers GetNodes with a fault
 PTZ_SPACES = {"spaces": ("ContinuousPanTiltVelocitySpace", "ContinuousZoomVelocitySpace")}
 

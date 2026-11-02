@@ -111,6 +111,12 @@
 .live-sound { position:absolute; z-index:3; top:8px; right:10px; width:34px; height:34px; border-radius:2px;
   border:1px solid rgba(255,255,255,0.5); background:rgba(0,0,0,0.6); color:#fff;
   display:flex; align-items:center; justify-content:center; padding:0; }
+/* "Share" (admin only): the same square at the top right, to the left of the sound button when there is one */
+.live-share { position:absolute; z-index:3; top:8px; right:10px; width:34px; height:34px; box-sizing:border-box; border-radius:2px;
+  border:1px solid rgba(255,255,255,0.5); background:rgba(0,0,0,0.6); color:#fff; text-decoration:none;
+  display:flex; align-items:center; justify-content:center; padding:0; }
+.live-sound + .live-share { right:50px; }
+.cam.has-share .camera-name { max-width:calc(100% - 104px); }
 .live-sound .waves { display:none; }
 .live-sound.on .waves { display:inline; }
 .live-sound.on .mute { display:none; }
@@ -160,6 +166,13 @@ body.embed .ptz { display:none; }
 .live-grid[data-cols="2"] .live-sound { top:6px; right:6px; width:26px; height:26px; }
 .live-grid[data-cols="3"] .live-sound { top:4px; right:4px; width:22px; height:22px; }
 .live-grid[data-cols="3"] .live-sound svg { width:12px; height:12px; }
+.live-grid[data-cols="2"] .live-share { top:6px; right:6px; width:26px; height:26px; }
+.live-grid[data-cols="3"] .live-share { top:4px; right:4px; width:22px; height:22px; }
+.live-grid[data-cols="3"] .live-share svg { width:12px; height:12px; }
+.live-grid[data-cols="2"] .live-sound + .live-share { right:36px; }
+.live-grid[data-cols="3"] .live-sound + .live-share { right:30px; }
+.live-grid[data-cols="2"] .cam.has-share .camera-name { max-width:calc(100% - 76px); }
+.live-grid[data-cols="3"] .cam.has-share .camera-name { max-width:calc(100% - 64px); }
 .live-grid[data-cols="2"] .live-note { font-size:11px; }
 .live-grid[data-cols="3"] .live-note { display:none; }
 /* embedded Live (the cloud grid of cameras, one frame per camera): only the player over the whole frame */
@@ -342,6 +355,17 @@ body.modal-open { overflow:hidden; }
   .live-grid[data-cols="3"] .live-sound { top:8px; right:8px; width:30px; height:30px; }
   .live-grid[data-cols="3"] .live-sound svg { width:16px; height:16px; }
   .live-grid[data-cols="2"] .live-note, .live-grid[data-cols="3"] .live-note { display:block; font-size:12px; }
+  .live-grid[data-cols="2"] .live-share { top:8px; right:10px; width:34px; height:34px; }
+  .live-grid[data-cols="3"] .live-share { top:8px; right:8px; width:30px; height:30px; }
+  .live-grid[data-cols="3"] .live-share svg { width:16px; height:16px; }
+  .live-grid[data-cols="2"] .live-sound + .live-share { right:50px; }
+  .live-grid[data-cols="3"] .live-sound + .live-share { right:42px; }
+  .live-grid[data-cols="2"] .cam.has-share .camera-name { max-width:calc(100% - 104px); }
+  .live-grid[data-cols="3"] .cam.has-share .camera-name { max-width:calc(100% - 92px); }
+  .live-grid[data-cols="4"] .live-share { top:6px; right:6px; width:26px; height:26px; }
+  .live-grid[data-cols="4"] .live-share svg { width:14px; height:14px; }
+  .live-grid[data-cols="4"] .live-sound + .live-share { right:36px; }
+  .live-grid[data-cols="4"] .cam.has-share .camera-name { max-width:calc(100% - 76px); }
   .live-grid[data-cols="4"] .camera-name { font-size:10px; margin:6px 0 0 6px; padding:1px 4px; max-width:calc(100% - 44px); }
   .live-grid[data-cols="4"] .live-status { left:6px; bottom:40px; font-size:0; }
   .live-grid[data-cols="4"] .live-status::before { margin:0; }
@@ -349,7 +373,7 @@ body.modal-open { overflow:hidden; }
   .live-grid[data-cols="4"] .live-sound svg { width:14px; height:14px; }
   .live-grid[data-cols="4"] .live-note { display:none; }
   .live-grid .live-note:empty { display:none; }
-  .live-sound { cursor:pointer; }
+  .live-sound, .live-share { cursor:pointer; }
 
   /* timelapse: the speed in one row above the picture, the player up to 960 px, centered, and low enough for the controls to fit on a short screen */
   .tl { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; max-width:min(960px, calc((100vh - 350px) * 16 / 9)); min-width:480px; margin:0 auto; }

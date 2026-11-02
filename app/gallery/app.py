@@ -37,6 +37,7 @@ import brand  # noqa: E402
 import zorcam_storage  # noqa: E402
 import yandex  # noqa: E402
 import mqtt  # noqa: E402
+import shares  # noqa: E402
 import stun  # noqa: E402
 import zorcam_i18n as i18n  # noqa: E402
 from zorcam_i18n import Msg, Raw, t  # noqa: E402
@@ -57,7 +58,7 @@ except ImportError as e:
 
 DEBUG = os.environ.get("ZORCAM_DEBUG") == "1"  # app/debug.sh on
 CHILD_ENV = {k: v for k, v in os.environ.items() if k != "NOTIFY_SOCKET"}  # иначе systemctl шлёт свой статус в наш сокет
-VERSION = "0.5.2"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
+VERSION = "0.5.3"  # номер релиза; меняется вместе с CHANGELOG.md и тегом X.Y.Z
 
 
 def installed_build():
@@ -77,7 +78,7 @@ HOST_IPS_MAX = 64  # записей в кеше DNS адресов, по кот�
 ENVIRONMENT = CFG.get("gallery", "environment")  # prod, stage или test: стенд этого устройства
 VIDEOS_PER_PAGE = CFG.get("gallery", "videos_per_page")
 TABS = ["live", "records"]  # вкладки нижней панели; «Записи» — переключатель двух панелей RECORD_TABS
-RECORD_TABS = ("all", "videos")  # панели «Записи» (порядок — как в переключателе): Timelapse и Видео (старые ссылки ?tab=videos и ?tab=all работают)
+RECORD_TABS = ("all", "videos")  # панели «Записи» (порядок — как в переключателе): Timelapse и Видео
 RECORDS_DEFAULT = "all"  # «Записи» открываются на Timelapse (решение владельца 13.10.2026)
 DEFAULT_TAB = "live"
 
@@ -88,6 +89,7 @@ stun.configure(ENVIRONMENT, CFG.get("live", "stun_servers"))
 GO2RTC_WEBRTC_URL = "http://127.0.0.1:1984/api/webrtc?src="  # + ID камеры; API go2rtc слушает только localhost
 MAX_SDP_SIZE = 65536
 HLS_JS_FILE = "hls.min.js"  # hls.js 1.7.3 (Apache-2.0, текст — static/hls.LICENSE.txt) лежит в static/ как есть, без CDN
+SHARE_VIEWERS_MAX = CFG.get("gallery", "share_viewers_max")  # одновременных зрителей по ссылкам без входа, все ссылки вместе
 WEBRTC_PORT = 8555  # webrtc.listen в go2rtc.yaml; этот же порт проброшен на роутере
 
 ROLE_LEVEL = {"liveviewer": 0, "viewer": 1, "admin": 2}  # liveviewer — только Live, без записей и push
@@ -501,13 +503,12 @@ def card_caption(filename):
     return h("div", h("span", ts.strftime("%H:%M:%S")), h("span", ts.strftime("%d.%m.%Y")), class_="cap")
 
 
-def list_files(dirname, ext, sort=True):
+def list_files(dirname, ext):
     try:
         files = [f for f in os.listdir(os.path.join(BASE_DIR, dirname)) if f.lower().endswith(ext)]
     except FileNotFoundError:
         return []
-    if sort:
-        files.sort(reverse=True)  # имя = YYYYMMDD_HHMMSS_mmm, лексикографически = хронологически
+    files.sort(reverse=True)  # имя = YYYYMMDD_HHMMSS_mmm, лексикографически = хронологически
     return files
 
 
@@ -769,7 +770,7 @@ def poster_version(video_dir, name):
 
 def video_meta(video_dir, name):
     """<имя>.json ролика от детектора: {"box": рамка области движения в долях кадра | None, "motion_at": секунды от
-    начала ролика | None}. Нет файла (старые ролики), он испорчен или в нём ничего нет — None; значения проверяются:
+    начала ролика | None}. Нет файла (у ролика без рамки), он испорчен или в нём ничего нет — None; значения проверяются:
     они попадают в страницу."""
     try:
         with open(os.path.join(BASE_DIR, video_dir, name + ".json"), "rb") as f:
@@ -959,18 +960,49 @@ JS_KEYS = {name: sorted(set(_T_KEY_RE.findall(body.decode()))) for name, (body, 
 # подстановки во всех шаблонах: css_app — адрес /static/app.css?v=<хеш>, js_main — /static/main.js?v=<хеш>;
 # то, что зависит от папки brand/ (app_head, app_name, touch_icon, theme_css, login_logo), ставит apply_brand
 TEMPLATE_VARS = {
-    "version": VERSION, "env_badge": ENV_BADGE,
+    "version": VERSION,
     "back_icon": trusted(BACK_ICON), "apple_icon": trusted(APPLE_ICON), "share_icon": trusted(SHARE_ICON),
     "ptr": trusted(TEMPLATES["ptr"]),
     **{f"{name.rsplit('.', 1)[1]}_{name.rsplit('.', 1)[0]}": f"/static/{name}?v={version}" for name, (_, _, version) in ASSETS.items() if name != HLS_JS_FILE},
 }
 
 
+def app_head(title, manifest, credentials=False):
+    """Теги <head> для «На экран Домой»: на iPhone страница открывается как отдельное приложение, без панелей Safari
+    (в Android и обычном браузере они ничего не меняют — Chrome только предложит установить). title — подпись под значком,
+    manifest — адрес манифеста; цвет, значки и тёмная строка состояния — из папки brand/ (apply_brand)."""
+    return f"""<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="{APP_BAR}">
+<meta name="apple-mobile-web-app-title" content="{esc(title)}">
+<meta name="theme-color" content="{esc(APP_COLOR)}">
+<link rel="apple-touch-icon" sizes="180x180" href="{TOUCH_ICON_DATA}">
+<link rel="icon" type="image/png" sizes="192x192" href="{ICON_URLS['/icon-192.png']}">
+<link rel="manifest" href="{esc(manifest)}"{' crossorigin="use-credentials"' if credentials else ''}>
+"""
+
+
+def manifest_json(name, start_url, scope, background):
+    return json.dumps({
+        "name": name,
+        "short_name": name,
+        "start_url": start_url,
+        "scope": scope,
+        "display": "standalone",
+        "background_color": background,
+        "theme_color": APP_COLOR,
+        "icons": [
+            {"src": ICON_URLS["/icon-192.png"], "sizes": "192x192", "type": "image/png"},
+            {"src": ICON_URLS["/icon-512.png"], "sizes": "512x512", "type": "image/png"},
+        ],
+    }, ensure_ascii=False).encode()
+
+
 def apply_brand(folder):
     """Всё, что <head> страниц, манифест, значки и шапка берут из папки brand/ надстройки (brand.Brand): имя приложения,
     цвет, значки, theme.css (последним <link> каждой страницы), знак. Папки нет — то, что было всегда. Вызывается при
     запуске; тест подставляет свою папку."""
-    global BRAND, APP_NAME, APP_HEAD, MANIFEST, ICON_FILES, ICON_URLS, TOUCH_ICON_DATA
+    global BRAND, APP_NAME, APP_HEAD, MANIFEST, ICON_FILES, ICON_URLS, TOUCH_ICON_DATA, APP_COLOR, APP_BAR
     BRAND = folder if isinstance(folder, brand.Brand) else brand.Brand(folder, log=lambda msg: print(msg, flush=True))
     base = BRAND.app_name or "Zorcam"
     APP_NAME = base if ENVIRONMENT == "prod" else f"{base} {ENVIRONMENT}"  # заголовок вкладки и подпись под иконкой
@@ -978,33 +1010,12 @@ def apply_brand(folder):
     # тёмный цвет сборки — тёмная строка состояния iPhone в режиме приложения (default там всегда светлая)
     r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
     bar = "black" if 0.299 * r + 0.587 * g + 0.114 * b < 128 else "default"
+    APP_COLOR, APP_BAR = color, bar
     ICON_FILES = {path: BRAND.icons.get(name) or os.path.join(STATIC_DIR, name) for path, name in STATIC_FILES.items()}
     ICON_URLS = {path: icon_url(path) for path in STATIC_FILES}
     TOUCH_ICON_DATA = icon_data_url("/apple-touch-icon.png")
-    # «На экран Домой» на iPhone открывает галерею как отдельное приложение, без панелей Safari.
-    # В Android и обычном браузере эти теги ничего не меняют (Chrome только предложит установить).
-    APP_HEAD = f"""<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="{bar}">
-<meta name="apple-mobile-web-app-title" content="{esc(APP_NAME)}">
-<meta name="theme-color" content="{esc(color)}">
-<link rel="apple-touch-icon" sizes="180x180" href="{TOUCH_ICON_DATA}">
-<link rel="icon" type="image/png" sizes="192x192" href="{ICON_URLS['/icon-192.png']}">
-<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
-"""
-    MANIFEST = json.dumps({
-        "name": base,
-        "short_name": base,
-        "start_url": "/?tab=live",
-        "scope": "/",
-        "display": "standalone",
-        "background_color": color,
-        "theme_color": color,
-        "icons": [
-            {"src": ICON_URLS["/icon-192.png"], "sizes": "192x192", "type": "image/png"},
-            {"src": ICON_URLS["/icon-512.png"], "sizes": "512x512", "type": "image/png"},
-        ],
-    }, ensure_ascii=False).encode()
+    APP_HEAD = app_head(APP_NAME, "/manifest.webmanifest", credentials=True)
+    MANIFEST = manifest_json(base, "/?tab=live", "/", color)
     TEMPLATE_VARS.update(
         app_head=trusted(APP_HEAD), app_name=esc(APP_NAME), touch_icon=esc(ICON_URLS["/apple-touch-icon.png"]),
         # theme.css — последним <link> страницы, перед </head>; знак — над формой входа
@@ -1197,28 +1208,35 @@ def ptz_html(c, lang, csrf, opened=False):
              aria_label=t(lang, "ptz.group"), data_cam=c["id"], data_csrf=csrf, hidden=True)
 
 
-def live_cam_html(c, lang, csrf="", link=False, ptz_open=False):
+def live_cam_html(c, lang, csrf="", link=False, ptz_open=False, share=False):
     """Плеер Live одной камеры: название, кадр, статус (его оживляет Player в static/main.js); csrf — для
     кнопок поворота (viewer и выше, не во встроенном плеере); link — название ведёт в Live только этой камеры;
-    ptz_open — кнопки поворота сразу раскрыты (Live одной камеры)."""
+    ptz_open — кнопки поворота сразу раскрыты (Live одной камеры); share — кнопка «Поделиться» (ссылки без входа камеры):
+    только admin, её нет во встроенном плеере и на странице по ссылке."""
     audio = bool(c.get("audio"))
     wrap = h("div", h("video", muted=True, playsinline=True, controls=True),
              h("span", t(lang, "js.connecting"), class_="live-status"),
              h("button", trusted(SOUND_ICON), type="button", class_="live-sound", aria_label=t(lang, "live.sound_on"),
                title=t(lang, "live.sound_on")) if audio else "",
+             h("a", trusted(SHARE_ICON), class_="live-share", href=f"/camera/{quote(c['id'], safe='')}/shares?from=live",
+               aria_label=t(lang, "live.share"), title=t(lang, "live.share")) if share else "",
              class_="live-wrap", data_cam=c["id"], data_audio=audio)
     name = (h("h2", h("a", h("span", c["name"]), h("span", "›", aria_hidden="true", class_="go"),
                       href=f"/?tab=live&cam={quote(c['id'], safe='')}", aria_label=t(lang, "live.only_cam")),
               class_="camera-name link")
             if link else h("h2", c["name"], class_="camera-name"))
     return h("div", name, wrap, h("div", class_="live-note"),
-             ptz_html(c, lang, csrf, ptz_open) if csrf else "", class_="cam")
+             ptz_html(c, lang, csrf, ptz_open) if csrf else "", class_="cam has-share" if share else "cam")
 
 
-def page_data(ice=()):
-    """window.PAGE главной страницы: что подставлялось в JS через .format (адрес hls.js, ICE-серверы облака, пауза до HLS)."""
-    return {"hlsUrl": f"/static/{HLS_JS_FILE}?v={ASSETS[HLS_JS_FILE][2]}",
+def page_data(ice=(), live_base=None):
+    """window.PAGE главной страницы: что подставлялось в JS через .format (адрес hls.js, ICE-серверы облака, пауза до HLS).
+    live_base — страница по ссылке без входа: все запросы Live плеера идут под /s/<токен> (static/main.js)."""
+    data = {"hlsUrl": f"/static/{HLS_JS_FILE}?v={ASSETS[HLS_JS_FILE][2]}",
             "webrtcFallbackMs": WEBRTC_FALLBACK * 1000, "iceServers": list(ice)}
+    if live_base:
+        data["liveBase"] = live_base
+    return data
 
 
 PAGE_SCRIPTS = ("app.js", "timelapse.js", "main.js")  # скрипты главной страницы по порядку; тексты для них — window.T
@@ -1232,6 +1250,28 @@ def render_embed(role, user, lang, cam_id, ice=()):
     body = live_cam_html(cam, lang) if cam else h("p", t(lang, "live.embed_unavailable"), class_="empty")
     return render_template("page", lang, body_class="embed", chrome="", tabbar="", panels=body,
                            data_script=data_script(lang, PAGE_SCRIPTS, page_data(ice)))
+
+
+def share_unavailable(lang, status_key="live.embed_unavailable"):
+    """Страница ссылки без плеера: ссылка неизвестна, истекла, удалена, камера выключена или удалена — одно и то же
+    сообщение, по ответу не понять, была ли такая ссылка; слишком много зрителей — своё."""
+    return render_template("page", lang, body_class="embed", chrome="", tabbar="", panels=h("p", t(lang, status_key), class_="empty"),
+                           data_script=data_script(lang, PAGE_SCRIPTS, page_data()), version="")
+
+
+def render_share(lang, token, cam, ice=()):
+    """Страница по ссылке без входа /s/<токен>: Live одной камеры, как встроенный (render_embed), без шапки, вкладок и
+    кнопок поворота. Своя подпись «На экран Домой» (название камеры) и свой манифест; запросы плеера — под /s/<токен>."""
+    base = f"/s/{token}"
+    return render_template("page", lang, body_class="embed", chrome="", tabbar="", panels=live_cam_html(cam, lang),
+                           data_script=data_script(lang, PAGE_SCRIPTS, page_data(ice, base)),
+                           app_head=trusted(app_head(cam["name"], base + "/manifest.webmanifest")),
+                           app_name=esc(cam["name"]), version="")
+
+
+def share_manifest(token, cam):
+    base = f"/s/{token}"
+    return manifest_json(cam["name"], base, base, "#000000")
 
 
 def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_id=None, ice=(), csrf="", at=None):
@@ -1268,7 +1308,7 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
         # ролик, который ещё пишется или кодируется, — постер с надписью; JS заменит его роликом, когда тот готов
         prep = t(lang, "videos.preparing")
 
-        def box_html(video_dir, n):  # рамка движения из <имя>.json детектора; у старых роликов файла нет
+        def box_html(video_dir, n):  # рамка движения из <имя>.json детектора
             meta = video_meta(video_dir, n)
             return motion_box_html(meta["box"]) if meta and meta["box"] else ""
 
@@ -1299,7 +1339,9 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
     # ?tab=live&cam=ID — Live одной камеры (только включённая и доступная; иначе «Все»); выбор нигде не хранится
     # (cam в «Записях» — выбор их камеры, поэтому режим одной камеры только при tab=live)
     single = next((c for c in live_cams if c["id"] == cam_id), None) if len(live_cams) > 1 and active_tab == "live" else None
-    live_body = cat(live_cam_html(c, lang, ptz_csrf, link=len(live_cams) > 1 and not single) for c in live_cams)
+    can_share = role == "admin"  # ссылки без входа создаёт только admin
+    live_body = cat(live_cam_html(c, lang, ptz_csrf, link=len(live_cams) > 1 and not single, share=can_share)
+                    for c in live_cams)
     # «Переподключить»: в приложении на iPhone жест «потянуть» над видео не срабатывает (касания забирает плеер)
     reload_btn = h("button", trusted(RELOAD_ICON), type="button", class_="pill reload", id="live-reload",
                    aria_label=t(lang, "live.reload"), title=t(lang, "live.reload"))
@@ -1308,7 +1350,7 @@ def render(active_tab, role="viewer", user="", vpage=1, lang=i18n.DEFAULT, cam_i
     live_tabs = h("div", cam_tabs("live", live_cams, all_tab, single), class_="toolbar") if len(live_cams) > 1 else ""
     if single:
         live_body = cat(live_tabs, h("div", reload_btn, class_="horizon-pills livecols"),
-                        h("div", live_cam_html(single, lang, ptz_csrf, ptz_open=True), class_="live-single"))
+                        h("div", live_cam_html(single, lang, ptz_csrf, ptz_open=True, share=can_share), class_="live-single"))
     elif len(live_cams) > 1:
         # на телефоне 1/2/3, на широком экране (от 1024 px) 2/3/4: лишнее прячет CSS (.only-narrow, .only-wide)
         cols = cat(
@@ -1485,6 +1527,8 @@ except Exception as e:  # например, нет прав на /var/lib/zorcam
     MQTT = None
     print(f"mqtt disabled: {e}", flush=True)
 
+
+SHARES = shares.Shares(log=log, max_viewers=lambda: SHARE_VIEWERS_MAX)
 
 _host_ips = {}  # имя -> (IP, когда узнали): DNS не на каждое подключение; не больше HOST_IPS_MAX (Host задаёт клиент)
 _host_ips_lock = threading.Lock()
@@ -1936,13 +1980,12 @@ def fmt_ago(sec, lang):
 
 def capture_error(st):
     """Последняя ошибка камеры из файла состояния zorcam-nvr-capture (Msg) или None."""
-    st = st or {}
-    data = st.get("last_error_msg")
-    if isinstance(data, dict):
-        reason = Msg.from_dict(data.get("reason"))
-        detail = data.get("detail")
-        return Msg("capture.with_detail", reason=reason, detail=detail) if detail else reason
-    return Raw(st["last_error"]) if st.get("last_error") else None  # детектор до версии с переводами
+    data = (st or {}).get("last_error_msg")
+    if not isinstance(data, dict):
+        return None
+    reason = Msg.from_dict(data.get("reason"))
+    detail = data.get("detail")
+    return Msg("capture.with_detail", reason=reason, detail=detail) if detail else reason
 
 
 # язык, выбранный в «Настройках», хранится на самом устройстве (в приложении или браузере): cookie, а не на Pi
@@ -2611,7 +2654,7 @@ ONVIF_PASSWORDS = {}
 ONVIF_PASSWORD_TTL = 1800
 ONVIF_SCAN_SECONDS = 3
 ONVIF_SUBNET_COOKIE = "zorcam_onvif_subnet"
-ONVIF_SUBNET_DEFAULT = "192.168.1.0"  # подсеть в поле до первого выбора; очищенное поле запоминается пустым
+ONVIF_SUBNET_EXAMPLE = "192.168.1.0"  # только placeholder поля: по умолчанию поиск без подсети (multicast)
 
 
 def onvif_keep_password(password):
@@ -2735,6 +2778,18 @@ CLOUD_DEFAULT = os.environ.get("ZORCAM_CLOUD_URL", CLOUD_URLS[ENVIRONMENT])
 
 
 YANDEX_TOKEN_URL = "https://oauth.yandex.ru/authorize?response_type=token&client_id=c473ca268cd749d3a8371351a8f2bcbd"
+
+
+def lan_ip():
+    """Адрес устройства в домашней сети: тот, с которого ушёл бы пакет в интернет (connect для UDP ничего не
+    отправляет); нет сети — ""."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 80))  # TEST-NET-1: адрес из документации, пакет не уходит
+            ip = sock.getsockname()[0]
+    except OSError:
+        return ""
+    return ip if ip and not ip.startswith("127.") and ip != "0.0.0.0" else ""
 
 
 def yandex_cloud_url():
@@ -2890,6 +2945,7 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
         detail = " · ".join(x for x in (dev["host"], dev["hardware"] if dev["hardware"] != title else "") if x)
         added = dev["host"] in hosts
         tag = h("span", t(lang, "onvif.added"), class_="tag") if added else ""
+        add_label = t(lang, "onvif.add_again" if added else "onvif.add")
         sections.append(h(
             "section", h("h2", title, tag),
             h("form", h("input", type="hidden", name="csrf", value=csrf), h("input", type="hidden", name="xaddr", value=dev["xaddr"]),
@@ -2901,7 +2957,7 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
                 class_="row field"),
               h("div", h("div", t(lang, "cam.password"), class_="k"),
                 h("input", type="password", name="password", value="", autocomplete="new-password"), class_="row field"),
-              h("div", h("button", t(lang, "onvif.add"), type="submit", data_busy=t(lang, "onvif.reading")), class_="actions"),
+              h("div", h("button", add_label, type="submit", data_busy=t(lang, "onvif.reading")), class_="actions"),
               method="POST", action="/onvif"), class_="added" if added else None))
     intro = cat(banner("bad", error) if error else "", banner("ok" if devices else "bad", t(lang, "onvif.intro" if devices else "onvif.none")))
     q = "?setup=1" if setup else ""
@@ -2910,7 +2966,7 @@ def render_onvif_page(lang, csrf, devices, setup=False, subnet="", error=None):
         h("form", h("section", h("h2", t(lang, "onvif.subnet")), h("input", type="hidden", name="setup", value="1" if setup else ""),
                     h("div", h("div", t(lang, "onvif.subnet_label"), h("span", t(lang, "onvif.subnet_hint"), class_="sub"), class_="k"),
                       # the decimal keypad of an iPhone in Russian has a comma instead of a dot: the URL keypad has the dot
-                      h("input", type="text", name="subnet", value=subnet, placeholder="192.168.2.0", **HOST_INPUT,
+                      h("input", type="text", name="subnet", value=subnet, placeholder=ONVIF_SUBNET_EXAMPLE, **HOST_INPUT,
                         oninput="this.value = this.value.replace(/,/g, '.')"), class_="row field"),
                     h("div", h("button", t(lang, "onvif.again"), type="submit", data_busy=t(lang, "onvif.searching")),
                       class_="actions")), method="GET", action="/onvif"),
@@ -2947,11 +3003,13 @@ def render_camera_form(lang, csrf, cam=None, form=None, errors=None, problem=Non
     parts.extend(banner(cls, text) for cls, text in notices)
     if cam and not setup:
         parts.append(camera_frame_html(lang, cam["id"]))
-    if not cam and not onvif_token and not form:
-        parts.append(h("div", h("a", t(lang, "onvif.find"), href="/onvif?setup=1" if setup else "/onvif",
-                                data_busy=t(lang, "onvif.searching")), class_="choice"))
+    # новая камера с чистого листа: рекомендации, поиск ONVIF, ручное добавление — форма свёрнута (решение владельца 20.10.2026)
+    blank = not cam and not onvif_token and not form
     parts.append(h("details", h("summary", t(lang, "cam.tips_title")), h("div", th(lang, "cam.tips"), class_="tip"),
                    class_="tips"))
+    if blank:
+        parts.append(h("div", h("a", t(lang, "onvif.find"), href="/onvif?setup=1" if setup else "/onvif",
+                                data_busy=t(lang, "onvif.searching")), class_="choice"))
     fields = []
     for key, _default, typ, _desc in zorcam_config.CAMERA_FIELDS:
         value = values.get(key, "")
@@ -2991,16 +3049,18 @@ def render_camera_form(lang, csrf, cam=None, form=None, errors=None, problem=Non
     if problem:
         fields.append(h("div", h("label", h("input", type="checkbox", name="force", value="1"), t(lang, "cam.force"), class_="check"),
                         class_="row field"))
-    parts.append(h("form", h("input", type="hidden", name="csrf", value=csrf),
+    form_html = h("form", h("input", type="hidden", name="csrf", value=csrf),
                    h("input", type="hidden", name="edit", value=cam["id"] if cam else ""),
                    h("input", type="hidden", name="setup", value="1" if setup else ""),
                    h("input", type="hidden", name="onvif", value=onvif_token),
                    h("section", h("h2", t(lang, "cam.section")), fields),
                    h("div", h("a", t(lang, "cfgpage.cancel"), href="/setup/cameras" if setup else settings_url("cameras")),
                      h("button", t(lang, "cfgpage.save"), type="submit"), class_="actions"),
-                   method="POST", action="/camera/save"))
+                   method="POST", action="/camera/save")
+    parts.append(h("details", h("summary", t(lang, "cam.manual")), form_html, class_="manual") if blank else form_html)
     if cam and not setup:
-        parts.append(h("section", h("a", t(lang, "zones.link"), class_="row action", href=f"/camera/{quote(cam['id'], safe='')}/zones")))
+        parts.append(h("section", h("a", t(lang, "zones.link"), class_="row action", href=f"/camera/{quote(cam['id'], safe='')}/zones"),
+                       h("a", t(lang, "share.link"), class_="row action", href=f"/camera/{quote(cam['id'], safe='')}/shares")))
         parts.append(h("section", h("h2", t(lang, "cam.delete_section")), h("div", t(lang, "cam.delete_note"), class_="tip"),
                        h("div", post_button("/camera/delete", {"id": cam["id"], "recordings": ""}, t(lang, "cam.delete"),
                                             t(lang, "cam.confirm_delete", name=cam["name"]), csrf),
@@ -3034,6 +3094,55 @@ def render_zones_page(lang, csrf, cam):
                  method="POST", action="/camera/zones")
     return settings_page(lang, t(lang, "zones.title", name=cam["name"]), f"/camera/{quote(cam['id'], safe='')}", "",
                          h("p", t(lang, "zones.intro"), class_="intro"), sections, extra="zones")
+
+
+def render_shares_page(lang, csrf, cam, base, new=None, error=None, from_live=False):
+    """Ссылки без входа камеры (только admin): созданные, форма новой. new — (ссылка, токен) только что созданной: токен
+    на диске не хранится, поэтому полную ссылку с кнопками «Скопировать» и «Поделиться» (их оживляет static/shares.js)
+    видно только сразу после создания. base — начало адреса ссылки. from_live — страницу открыли кнопкой в Live: «Назад»
+    ведёт в Live этой камеры (а не в форму камеры), и это же помнят формы страницы."""
+    back = f"/?tab=live&cam={quote(cam['id'], safe='')}" if from_live else f"/camera/{quote(cam['id'], safe='')}"
+    origin = "live" if from_live else ""
+
+    def when(ts):
+        return time.strftime("%d.%m.%Y %H:%M", time.localtime(ts))
+    parts = [banner("bad", error) if error else ""]
+    if new:
+        item, token = new
+        link = f"{base}/s/{token}"
+        parts.append(h("section", h("h2", item["label"] or t(lang, "share.no_label")),
+                       h("div", t(lang, "share.new"), class_="tip"),
+                       h("div", h("div", h("span", link, class_="sub sharelink"), class_="k"), class_="row"),
+                       h("div", h("button", t(lang, "share.copy"), type="button", data_copy=link),
+                         h("button", t(lang, "share.share"), type="button", data_share=link, hidden=True), class_="shareacts"),
+                       h("div", t(lang, "share.hint"), class_="tip")))
+    rows = []
+    for it in SHARES.listing(cam["id"]):
+        label = it["label"] or t(lang, "share.no_label")
+        until = (t(lang, "share.expired", date=when(it["expires"])) if it["expired"]
+                 else t(lang, "share.until", date=when(it["expires"])) if it["expires"] else t(lang, "share.forever"))
+        opened = t(lang, "share.opened", at=when(it["last_opened"])) if it["last_opened"] else t(lang, "share.never")
+        rows.append(h("div", h("div", label, h("span", until, class_="sub"), h("span", opened, class_="sub"), class_="k"),
+                      class_="row"))
+        rows.append(h("div", post_button("/camera/shares/delete", {"id": cam["id"], "share": it["id"], "from": origin},
+                                         t(lang, "share.delete"), t(lang, "share.confirm_delete", label=label), csrf),
+                      class_="rec"))
+    parts.append(h("section", h("h2", t(lang, "share.list")),
+                   rows or h("div", h("div", t(lang, "share.none"), class_="k"), class_="row")))
+    options = [h("option", t(lang, "share.days." + d), value=d, selected=d == "never") for d in ("1", "7", "30", "never")]
+    parts.append(h("form", h("input", type="hidden", name="csrf", value=csrf),
+                   h("input", type="hidden", name="id", value=cam["id"]),
+                   h("input", type="hidden", name="from", value=origin),
+                   h("section", h("h2", t(lang, "share.create")),
+                     h("div", h("div", t(lang, "share.label"), class_="k"),
+                       h("input", type="text", name="label", maxlength=shares.LABEL_MAX, autocomplete="off",
+                         placeholder=t(lang, "share.label_ph")), class_="row field"),
+                     h("div", h("div", t(lang, "share.expiry"), class_="k"), h("select", options, name="expires"),
+                       class_="row field"),
+                     h("div", h("button", t(lang, "share.submit"), type="submit"), class_="actions")),
+                   method="POST", action="/camera/shares/create"))
+    return settings_page(lang, t(lang, "share.title", name=cam["name"]), back, "",
+                         h("p", t(lang, "share.intro"), class_="intro"), cat(parts), extra="shares")
 
 
 # ---------------------------------------------------------------- мастер первичной настройки
@@ -3118,6 +3227,14 @@ def safe_name(name):
     return name and "/" not in name and ".." not in name
 
 
+SHARE_PATH_RE = re.compile(r"/s/[^/?\s]+")
+
+
+def mask_share(text):
+    """Токен ссылки без входа (/s/<токен>) в любой строке журнала — звёздочки."""
+    return SHARE_PATH_RE.sub("/s/***", text)
+
+
 class Handler(BaseHTTPRequestHandler):
     # сек ожидания клиента на сокете: телефон, пропавший из сети посреди запроса, не держит поток вечно (и простаивающее
     # keep-alive соединение закрывается через столько же)
@@ -3131,6 +3248,8 @@ class Handler(BaseHTTPRequestHandler):
     disable_nagle_algorithm = True
     status_code = 0
     sized = False  # в ответе есть Content-Length
+    share = False  # запрос под /s/<токен> (ссылка без входа): ответу ставятся no-store и noindex, см. end_headers
+    sent = frozenset()  # заголовки текущего ответа (в нижнем регистре)
 
     def version_string(self):
         return self.server_version
@@ -3148,12 +3267,13 @@ class Handler(BaseHTTPRequestHandler):
         start, self.status_code, self.requestline = time.monotonic(), None, ""
         super().handle_one_request()
         if getattr(self, "requestline", ""):  # app/debug.sh on: каждый запрос с кодом и временем ответа
-            path = self.requestline.rsplit(" ", 1)[0]
+            path = mask_share(self.requestline.rsplit(" ", 1)[0])  # токен ссылки в журнал не попадает
             log(f"debug: {path} -> {self.status_code} in {time.monotonic() - start:.3f} s "
                 f"({threading.active_count()} threads)")
 
     def parse_request(self):
         self._identity = None  # вход через облако считается заново для каждого запроса
+        self.share = False
         ok = super().parse_request()
         REQUEST.cloud = ok and self.via_cloud()
         return ok
@@ -3198,11 +3318,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_response_only(self, code, message=None):
         self.sized = False
+        self.sent = set()
         super().send_response_only(code, message)
 
     def send_header(self, keyword, value):
         if keyword.lower() == "content-length":
             self.sized = True
+        self.sent = self.sent | {keyword.lower()}
         super().send_header(keyword, value)
 
     def frame_ancestors(self):
@@ -3228,6 +3350,10 @@ class Handler(BaseHTTPRequestHandler):
         # script-src не ограничиваем: в страницах есть встроенные скрипты (window.T, window.PAGE) и обработчики oninput
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
+        if self.share:  # страница и запросы плеера по секретной ссылке: ни в кеше, ни в поиске
+            self.send_header("X-Robots-Tag", "noindex")
+            if "cache-control" not in self.sent:
+                self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy",
                          f"frame-ancestors {self.frame_ancestors()}; object-src 'none'; base-uri 'none'")
         # HTTP/1.1: клиент отличает конец ответа по Content-Length. Перенаправление и 416 без тела получают нулевую
@@ -3453,6 +3579,10 @@ class Handler(BaseHTTPRequestHandler):
             self.yandex_get(path, parsed.query)
             return
 
+        if path.startswith("/s/"):  # ссылка без входа: свой доступ по токену, дальше require_auth не доходит
+            self.share_get(path)
+            return
+
         # пока нет ни одного пользователя, всё ведёт в мастер первичной настройки
         if setup_needed() and path not in ("/setup", "/setup/users"):
             self.redirect("/setup")
@@ -3509,7 +3639,6 @@ class Handler(BaseHTTPRequestHandler):
             if tab == "live" and qs.get("embed", [""])[0] == "1":
                 self.send_html(render_embed(self.role, self.user, self.lang, qs.get("cam", [""])[0], ice=ice))
                 return
-            # старые ссылки на сетку снимков (mode=, horizon=, fpage=) открывают ту же вкладку: параметры не читаются
             self.send_html(render(tab, self.role, self.user, vpage, self.lang, qs.get("cam", [None])[0], ice=ice,
                                   csrf=csrf_token(self.get_session_token()), at=qs.get("at", [None])[0]))
             return
@@ -3523,29 +3652,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        if live and live.group(2) == "stream.m3u8":
-            stream = live_stream(live.group(1))
-            stream.touch()
-            playlist = stream.wait_playlist()
-            if playlist is None:
-                self.send_error(503, "Live stream is not ready")
-                return
-            body = playlist.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache, no-store")
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
         if live:
-            stream = live_stream(live.group(1))
-            stream.touch()
-            try:
-                self.send_file(os.path.join(stream.dir, live.group(2)), "video/mp2t")
-            except FileNotFoundError:
-                self.send_error(404)
+            self.send_live(live.group(1), live.group(2))
             return
 
         if path == "/config":
@@ -3649,10 +3757,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.require_role("admin"):
                 qs = parse_qs(parsed.query, keep_blank_values=True)
                 setup = qs.get("setup") == ["1"]
-                # подсеть из формы запоминается на этом устройстве; пустое поле — только сеть Pi, и так и запоминается
-                remembered = self.cookie(ONVIF_SUBNET_COOKIE)
+                # подсеть из формы запоминается на этом устройстве; пустое поле (и по умолчанию) — только сеть Pi
                 subnet = (qs["subnet"][0].strip().replace(",", ".") if "subnet" in qs
-                          else ONVIF_SUBNET_DEFAULT if remembered is None else remembered)
+                          else self.cookie(ONVIF_SUBNET_COOKIE) or "")
                 cookies = []
                 if "subnet" in qs:
                     cookies.append(f"{ONVIF_SUBNET_COOKIE}={quote(subnet)}; Path=/onvif; SameSite=Lax; Max-Age=31536000")
@@ -3673,6 +3780,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             self.send_html(render_zones_page(self.lang, csrf_token(self.get_session_token()), cam))
+            return
+
+        if path.startswith("/camera/") and path.endswith("/shares"):
+            if not self.require_role("admin"):
+                return
+            cam = camera(unquote(path[len("/camera/"):-len("/shares")]))
+            if cam is None:
+                self.send_error(404)
+                return
+            self.send_html(render_shares_page(self.lang, csrf_token(self.get_session_token()), cam, self.share_base(),
+                                              from_live=parse_qs(parsed.query).get("from") == ["live"]))
             return
 
         if path.startswith("/camera/"):
@@ -3766,6 +3884,149 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
+    # ---- ссылки без входа (/s/<токен>): Live одной камеры; токен — в адресе, а не в cookie: у «Домой»-приложения iPhone
+    # своя банка cookie, а адрес запуска (start_url манифеста) — тот же. Адреса запросов плеера (static/main.js, PAGE.liveBase):
+    # /s/<токен>, /s/<токен>/{manifest.webmanifest,webrtc,webrtc-log,ping,stream.m3u8,seg_NNNNN.ts}; камера всегда та,
+    # что у ссылки, — в адресе её нет, поэтому через ссылку нельзя ни другая камера, ни что-либо ещё в галерее.
+
+    def share_open(self, path):
+        """(ссылка, камера, что, токен) для /s/<токен>[/<что>] или None: ответ «Камера недоступна» уже отправлен. Нет такой
+        ссылки, она истекла или удалена, камера выключена или удалена — один и тот же ответ."""
+        self.share = True
+        m = re.fullmatch(r"/s/([^/]*)(?:/([^/]*))?", path)
+        item = SHARES.find(m.group(1)) if m else None
+        cam = camera(item["camera"]) if item else None
+        if cam is None or not cam.get("enabled", True):
+            self.send_html(share_unavailable(self.lang), status=404)
+            return None
+        return item, cam, m.group(2) or "", m.group(1)
+
+    def share_admit(self, item, page=False):
+        """Зритель по ссылке считается (лимит [gallery] share_viewers_max); False — ответ 429 уже отправлен (page — на
+        саму страницу: с текстом, на запросы плеера: без)."""
+        client = f"{self.client_ip()}|{(self.headers.get('User-Agent') or '')[:100]}"
+        if SHARES.admit(item["id"], client):
+            return True
+        if page:
+            self.send_html(share_unavailable(self.lang, "share.too_many"), status=429)
+        else:
+            self.send_error(429, "Too many viewers")
+        return False
+
+    def share_get(self, path):
+        got = self.share_open(path)
+        if got is None:
+            return
+        item, cam, what, token = got
+        seg = re.fullmatch(r"seg_\d{5}\.ts", what)
+        if what not in ("", "manifest.webmanifest", "ping", "stream.m3u8") and not seg:
+            self.send_error(404)
+            return
+        if what == "manifest.webmanifest":
+            body = share_manifest(token, cam)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/manifest+json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if not self.share_admit(item, page=what == ""):
+            return
+        if what == "":
+            if SHARES.opened(item["id"]):
+                log(f"shares: link {item['id']} {json.dumps(item['label'], ensure_ascii=False)} to {cam['id']} opened "
+                    f"from {self.client_desc()}")
+            ice = cloud_ice(self.headers.get("X-Zorcam-Ice")) if self.on_tunnel else []
+            stun.note_cloud_ice(ice)
+            self.send_html(render_share(self.lang, token, cam, ice))
+        elif what == "ping":  # WebRTC после соединения запросов не шлёт: страница сама напоминает, что зритель на месте
+            self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_live(cam["id"], what)
+
+    def share_post(self, path):
+        got = self.share_open(path)
+        if got is None:
+            return
+        item, cam, what, _ = got
+        if what not in ("webrtc", "webrtc-log"):
+            self.send_error(404)
+        elif self.share_admit(item):  # и отчёт об ошибке — запрос зрителя: считается и ограничен, как остальные
+            if what == "webrtc-log":
+                self.webrtc_report()
+            else:
+                offer = self.read_offer()
+                if offer is not None:
+                    self.webrtc_answer(cam["id"], offer, self.on_tunnel)
+
+    def share_base(self):
+        """Начало адреса ссылки для копирования — домашний адрес устройства (решение владельца: ссылка локальная):
+        адрес, по которому открыта эта страница; открыта через облако — http://<адрес устройства в домашней сети>;
+        не вышло — пусто (страница делает адрес полным по своему)."""
+        if self.on_tunnel:
+            ip = lan_ip()
+            return f"http://{ip}" if ip else ""
+        host = self.request_host()
+        return f"{'https' if self.https_front() else 'http'}://{host}" if host else ""
+
+    def share_create(self):
+        form = self.admin_form(4096)
+        if form is None:
+            return
+        cam = camera(form.get("id", [""])[0])
+        days = form.get("expires", ["never"])[0]
+        if cam is None:
+            self.send_error(404)
+            return
+        if days not in ("never", *map(str, shares.EXPIRY_DAYS)):
+            self.send_error(400)
+            return
+        csrf = csrf_token(self.get_session_token())
+        from_live = form.get("from") == ["live"]  # только известное значение: назад ведёт в Live, а не по чужому адресу
+        try:
+            item, token = SHARES.create(cam["id"], form.get("label", [""])[0], int(days) if days != "never" else None)
+        except ValueError:
+            self.send_html(render_shares_page(self.lang, csrf, cam, self.share_base(), error=t(self.lang, "share.too_many_links"),
+                                              from_live=from_live), status=400)
+            return
+        log(f"shares: link {item['id']} {json.dumps(item['label'], ensure_ascii=False)} to {cam['id']} created by {self.user}")
+        # токен виден только здесь: на диске остался его хеш
+        self.send_html(render_shares_page(self.lang, csrf, cam, self.share_base(), new=(item, token), from_live=from_live))
+
+    def share_delete(self):
+        form = self.admin_form(4096)
+        if form is None:
+            return
+        cam_id = form.get("id", [""])[0]
+        if camera(cam_id) is None or not SHARES.delete(form.get("share", [""])[0], cam_id):
+            self.send_error(404)
+            return
+        log(f"shares: link {form['share'][0]} to {cam_id} deleted by {self.user}")
+        self.redirect(f"/camera/{quote(cam_id, safe='')}/shares" + ("?from=live" if form.get("from") == ["live"] else ""))
+
+    def send_live(self, cam_id, name):
+        """HLS камеры: плейлист (stream.m3u8) или сегмент (seg_NNNNN.ts); доступ камеры проверил вызывающий."""
+        stream = live_stream(cam_id)
+        stream.touch()
+        if name == "stream.m3u8":
+            playlist = stream.wait_playlist()
+            if playlist is None:
+                self.send_error(503, "Live stream is not ready")
+                return
+            body = playlist.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        try:
+            self.send_file(os.path.join(stream.dir, name), "video/mp2t")
+        except FileNotFoundError:
+            self.send_error(404)
+
     def tunnel_client_ip(self):
         """Адрес клиента, которого облако ставит в X-Zorcam-Client-IP запросам Яндекса через туннель (там
         client_address всегда 127.0.0.1). Верим только запросу на туннельном порту и только настоящему IP; иначе None."""
@@ -3803,6 +4064,9 @@ class Handler(BaseHTTPRequestHandler):
         if not is_valid_session(self.get_session_token()):
             self.send_error(401)
             return
+        self.webrtc_report()
+
+    def webrtc_report(self):
         try:
             length = min(int(self.headers.get("Content-Length", 0)), 2000)
         except ValueError:
@@ -3819,18 +4083,29 @@ class Handler(BaseHTTPRequestHandler):
         if user is None:
             self.send_error(401)
             return
+        offer = self.read_offer()
+        if offer is None:
+            return
+        cam_id = parse_qs(urlparse(self.path).query).get("cam", [""])[0]
+        if not can_see(user, role, cam_id):
+            self.send_error(404)
+            return
+        self.webrtc_answer(cam_id, offer, self.via_cloud())
+
+    def read_offer(self):
+        """Тело запроса — SDP offer браузера; None — ответ 400 уже отправлен."""
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
             length = 0
         if length <= 0 or length > MAX_SDP_SIZE:
             self.send_error(400)
-            return
-        offer = self.rfile.read(length)
-        cam_id = parse_qs(urlparse(self.path).query).get("cam", [""])[0]
-        if not can_see(user, role, cam_id):
-            self.send_error(404)
-            return
+            return None
+        return self.rfile.read(length)
+
+    def webrtc_answer(self, cam_id, offer, cloud):
+        """SDP offer -> go2rtc -> SDP answer с кандидатами; cloud — запрос пришёл через облако (его TURN и STUN, а не адрес
+        страницы). Доступ к камере проверил вызывающий."""
         req = urllib.request.Request(
             GO2RTC_WEBRTC_URL + cam_id, data=offer, method="POST", headers={"Content-Type": "application/sdp"}
         )
@@ -3851,9 +4126,9 @@ class Handler(BaseHTTPRequestHandler):
         # (работает и через облако: устройство само за NAT с пробросом, TURN облака остаётся запасным путём), и адрес,
         # по которому открыта галерея (домен DDNS) — но не адрес облака: <id>.devices.<домен облака> ведёт на его сервер, а там
         # порта 8555 нет; домен, который у нас резолвится в частный адрес (KeenDNS из дома), тоже не годится
-        if self.via_cloud():
+        if cloud:
             stun.note_cloud_ice(cloud_ice(self.headers.get("X-Zorcam-Ice")))
-        host = public_host(self.request_host()) if not self.via_cloud() else None
+        host = public_host(self.request_host()) if not cloud else None
         page_ip = host_ip(host) if host else None
         ips = []
         for ip in (stun.external()[0], page_ip if page_ip and stun.usable(page_ip) else None):
@@ -4336,7 +4611,11 @@ class Handler(BaseHTTPRequestHandler):
             password = ""
         # камера отвечает до сохранения; пароль остаётся в этом процессе (без командной строки)
         # выключенную камеру не проверяем: её часто выключают как раз потому, что она недоступна
-        skip_probe = form.get("force") == ["1"] or not cam["enabled"]
+        # у существующей камеры — только если правка касается подключения: адреса, логин, новый пароль, включение
+        # (переименование и прочее не должно упираться в камеру, которая сейчас не отвечает)
+        connection_changed = (old is None or any(cam[k] != old[k] for k in ("rtsp_url", "rtsp_sub_url", "rtsp_user"))
+                              or bool(form.get("password", [""])[0]) or (cam["enabled"] and not old["enabled"]))
+        skip_probe = form.get("force") == ["1"] or not cam["enabled"] or not connection_changed
         problem = None if skip_probe else zorcam_config.probe_camera(zorcam_config.rtsp_url(cam, password), 5)
         if not problem and cam["rtsp_sub_url"] and not skip_probe:
             sub_problem = zorcam_config.probe_camera(zorcam_config.rtsp_url(cam, password, sub=True), 5)
@@ -4446,6 +4725,7 @@ class Handler(BaseHTTPRequestHandler):
             for d in cam_dirs(cam_id):
                 shutil.rmtree(os.path.join(BASE_DIR, d), ignore_errors=True)
         zorcam_users.forget_camera(cam_id)
+        SHARES.forget_camera(cam_id)
         zorcam_config.save_zone(cam_id, "exclude", None)
         log(f"cameras: {cam_id} deleted by {self.user}" + (" with its recordings" if with_recordings else ""))
         self.redirect(settings_url("cameras"))
@@ -4679,9 +4959,12 @@ class Handler(BaseHTTPRequestHandler):
         # машинные адреса (детектор, Яндекс) браузер не вызывает; остальное — только со страниц самого устройства
         if (path != "/internal/motion" and path != "/yandex/token" and not path.startswith("/yandex/v1.0/")
                 and self.foreign_post()):
-            log(f"post: {path} refused, cross-site request from {self.client_desc()} "
+            log(f"post: {mask_share(path)} refused, cross-site request from {self.client_desc()} "
                 f"(Sec-Fetch-Site {self.headers.get('Sec-Fetch-Site')}, Origin {self.headers.get('Origin')})")
             self.send_error(403)
+            return
+        if path.startswith("/s/"):  # ссылка без входа
+            self.share_post(path)
             return
         routes = {
             "/config": self.config_save,
@@ -4703,6 +4986,8 @@ class Handler(BaseHTTPRequestHandler):
             "/onvif": self.onvif_camera,
             "/camera/delete": self.camera_delete,
             "/camera/zones": self.camera_zones,
+            "/camera/shares/create": self.share_create,
+            "/camera/shares/delete": self.share_delete,
             "/camera/enable": self.camera_enable,
             "/cloud/connect": self.cloud_connect,
             "/settings/storage": self.storage_request,
@@ -4810,8 +5095,6 @@ class Server(ThreadingHTTPServer):
 if __name__ == "__main__":
     for e in CFG.errors:
         log(f"config: {e}")
-    for name in zorcam_users.migrate_camera_access([c["id"] for c in cameras()]):
-        log(f"users: {name} keeps the cameras they saw; a new camera is now closed until switched on for them")
     threading.Thread(target=prune_thumbs, daemon=True).start()
     threading.Thread(target=HEALTH.loop, daemon=True).start()
     threading.Thread(target=watchdog_loop, daemon=True).start()

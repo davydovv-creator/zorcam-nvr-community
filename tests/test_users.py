@@ -36,20 +36,9 @@ def test_camera_access_is_kept_and_forgotten_with_the_camera():
     assert zorcam_users.cameras_of("bob") == {"gate"}
 
 
-def test_old_camera_access_is_migrated():
-    """users.json where new cameras were open to all ("cameras_off"): each user keeps seeing the same cameras."""
-    zorcam_users.save({"admin": {"role": "admin", "salt": "00", "hash": "x"},
-                      "bob": {"role": "viewer", "salt": "00", "hash": "x", "cameras_off": ["yard"]},
-                      "guest": {"role": "liveviewer", "salt": "00", "hash": "x"},
-                      "new": {"role": "viewer", "salt": "00", "hash": "x", "cameras": ["gate"]}})
-    assert zorcam_users.migrate_camera_access(["front", "yard", "gate"]) == ["bob", "guest"]
-    users = zorcam_users.load()
-    assert users["bob"]["cameras"] == ["front", "gate"] and "cameras_off" not in users["bob"]
-    assert users["guest"]["cameras"] == ["front", "gate", "yard"] and users["new"]["cameras"] == ["gate"]
-    assert "cameras" not in users["admin"]
-    assert zorcam_users.migrate_camera_access(["front", "yard", "gate", "garage"]) == []  # once only
-    zorcam_users.set_user("cli", "viewer", "secret1")  # created on the Pi: no camera, and the migration keeps it so
-    assert zorcam_users.migrate_camera_access(["front"]) == [] and zorcam_users.cameras_of("cli") == set()
+def test_a_user_created_on_the_pi_sees_no_camera():
+    zorcam_users.set_user("cli", "viewer", "secret1")
+    assert zorcam_users.cameras_of("cli") == set()
 
 
 def test_passwords_are_not_stored(tmp_path):

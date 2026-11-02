@@ -123,19 +123,9 @@ class PushService:
         try:
             with open(SUBSCRIPTIONS_FILE) as f:
                 data = json.load(f)
-            subs = {k: v for k, v in data.items() if isinstance(v, dict)}
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
         except (OSError, ValueError):
             return {}
-        # подписки прежних версий принимались с любым https-адресом: чужой хост — удалить сразу
-        kept = {k: v for k, v in subs.items() if allowed_endpoint(k)}
-        for endpoint in subs.keys() - kept.keys():
-            print(f"push: subscription for {urlparse(endpoint).hostname} dropped: not a known push service", flush=True)
-        if len(kept) != len(subs):
-            try:
-                _write_private(SUBSCRIPTIONS_FILE, json.dumps(kept).encode())
-            except OSError as e:
-                print(f"push: cannot save subscriptions: {e}", flush=True)
-        return kept
 
     def _save(self):
         # вызывается под self.lock
